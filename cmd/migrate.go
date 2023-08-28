@@ -6,6 +6,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 
 	cf "github.com/essentialkaos/go-confluence/v6"
 	"github.com/google/uuid"
@@ -75,26 +76,40 @@ var migrateCmd = &cobra.Command{
 
 func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceClient *confluence.ConfluenceExtendedClient, outlineClient *outline.OutlineExtendedClient, collectionId string) {
 	var publish = true
-	text := ""
-	if page.Body != nil && page.Body.StorageView != nil {
-		text = page.Body.StorageView.Value
-	}
-	createDocumentReq := outline.PostDocumentsCreateJSONRequestBody{
-		CollectionId: uuid.MustParse(collectionId),
-		Title:        page.Title,
-		Text:         &text,
-		Publish:      &publish,
-	}
-	if parentDocumentId != "" {
-		parentDocumentUuid := uuid.MustParse(parentDocumentId)
-		createDocumentReq.ParentDocumentId = &parentDocumentUuid
-	}
-	createDocumentRes, err := outlineClient.CreateDocument(createDocumentReq)
+
+	exportedDoc, err := confluenceClient.ExportDoc(page.ID)
 	if err != nil {
 		panic(err)
 	}
-	createdDocumentId := createDocumentRes.JSON200.Data.Id
-	fmt.Printf("Created document \"%s\" (%s).\n", createdDocumentId, *createDocumentRes.JSON200.Data.Title)
+
+	exportedDocBytes, err := os.ReadFile("tmp/" + *exportedDoc) // just pass the file name
+	if err != nil {
+		fmt.Print(err)
+	}
+
+	collectionUuid := uuid.MustParse(collectionId)
+	importFileRequest := map[string]any{
+		"file": exportedDocBytes,
+	}
+	importDocumentReq := outline.PostDocumentsImportMultipartRequestBody{
+		CollectionId: &collectionUuid,
+
+		// File Only plain text, markdown, docx, and html format are supported.
+		File:    &importFileRequest,
+		Publish: &publish,
+	}
+
+	if parentDocumentId != "" {
+		parentDocumentUuid := uuid.MustParse(parentDocumentId)
+		importDocumentReq.ParentDocumentId = &parentDocumentUuid
+	}
+	importDocumentRes, err := outlineClient.ImportDocument(importDocumentReq, *exportedDoc, page.Title)
+	if err != nil {
+		panic(err)
+	}
+	createdDocumentId := importDocumentRes.JSON200.Data.Id
+	os.Remove("tmp/" + *exportedDoc)
+	fmt.Printf("Imported document \"%s\" (%s).\n", createdDocumentId, *importDocumentRes.JSON200.Data.Title)
 
 	if page.Children == nil || page.Children.Pages.Size == 0 {
 		return

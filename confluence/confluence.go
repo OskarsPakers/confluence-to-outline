@@ -49,21 +49,21 @@ func (c *ConfluenceExtendedClient) ExportDoc(pageId string) (*string, error) {
 	// return c.Client.url
 	// "CONFLUENCE_URL" + "exportword?pageId=PAGE_ID"
 	filename := pageId + ".doc"
-	out, err := os.Create(filename)
+	out, err := os.Create("tmp/" + pageId + ".doc")
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	defer out.Close()
 
 	resp, err := http.Get(c.baseUrl + "/exportword?pageId=" + pageId)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	defer resp.Body.Close()
 
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	return &filename, nil
 }
