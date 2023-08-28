@@ -1,0 +1,5 @@
+compatibility:
+  old-merge-schemas: true
+generate:
+  client: true
+  models: true
