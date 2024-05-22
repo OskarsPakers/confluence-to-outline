@@ -29,20 +29,20 @@ CONFLUENCE_BASE_URL=https://hostname.com/
 OUTLINE_API_TOKEN={api_token}
 OUTLINE_BASE_URL=http://127.0.0.1:8888/api
 ```
-The Confluence base URL must end with /
-Outline base URL must end with /api
+The Confluence base URL must end with /  
+Outline base URL must end with /api  
 Outline API token is available in Account settings - API Tokens
 
 ### Migration -
 ```
 go run main.go migrate --from {Confluence SpaceKey} --to {Outline collection ID}
 ```
-SpaceKey - 
-The all capital letter keyword after /display/ part of the URL 
-hostname/display/TEST/Test has the SpaceKey "TEST"
+**SpaceKey** -  
+The all capital letter keyword after /display/ part of the URL  
+'hostname/display/TEST/Test' has the SpaceKey "TEST"  
 
-Outline CollectionID -
-While in the inspect element Network tab in the destination Outline page Star the target collection.
+**Outline CollectionID** -  
+While in the inspect element Network tab in the destination Outline page Star the target collection.  
 There will be a POST request with the collectionId in the Request and Response tabs. 
 
 ### Clean -
