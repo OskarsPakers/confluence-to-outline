@@ -7,13 +7,18 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 
 	cf "github.com/essentialkaos/go-confluence/v6"
 	"github.com/google/uuid"
+	"github.com/gosimple/slug"
 	"github.com/spf13/cobra"
 	"zzdats.lv/confluence-to-outline/confluence"
 	"zzdats.lv/confluence-to-outline/outline"
 )
+
+var urlMap = make(map[string]string)
+var urlMapMutex = &sync.Mutex{}
 
 // migrateCmd represents the migrate command
 var migrateCmd = &cobra.Command{
@@ -71,6 +76,7 @@ var migrateCmd = &cobra.Command{
 		for _, page := range rootPages.Pages.Results {
 			migratePageRecurse(page, "", confluenceClient, outlineClient, collectionId)
 		}
+		//replaceUrls(outlineClient)
 	},
 }
 
@@ -81,7 +87,6 @@ func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceCli
 	if err != nil {
 		panic(err)
 	}
-
 	exportedDocBytes, err := os.ReadFile("tmp/" + *exportedDoc) // just pass the file name
 	if err != nil {
 		fmt.Print(err)
@@ -107,7 +112,18 @@ func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceCli
 	if err != nil {
 		panic(err)
 	}
+
 	createdDocumentId := importDocumentRes.JSON200.Data.Id
+
+	title := *importDocumentRes.JSON200.Data.Title
+	urlId := *importDocumentRes.JSON200.Data.UrlId
+	titleSlug := slug.Make(title)
+	newUrl := fmt.Sprintf("/doc/%s-%s", titleSlug, urlId)
+	oldUrl := fmt.Sprintf("/pages/viewpage.action?pageId=%s", page.ID)
+	urlMapMutex.Lock()
+	urlMap[oldUrl] = newUrl
+	urlMapMutex.Unlock()
+
 	os.Remove("tmp/" + *exportedDoc)
 	fmt.Printf("Imported document \"%s\" (%s).\n", createdDocumentId, *importDocumentRes.JSON200.Data.Title)
 
@@ -124,7 +140,6 @@ func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceCli
 		if err != nil {
 			panic(err)
 		}
-
 		migratePageRecurse(childPageFull, createdDocumentId.String(), confluenceClient, outlineClient, collectionId)
 	}
 }
