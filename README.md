@@ -21,6 +21,36 @@ Flags:
 Use "confluence-to-outline [command] --help" for more information about a command.
 ```
 
+## Usage
+
+An .env file is required with the following fields -
+```
+CONFLUENCE_BASE_URL=https://hostname.com/
+OUTLINE_API_TOKEN={api_token}
+OUTLINE_BASE_URL=http://127.0.0.1:8888/api
+```
+The Confluence base URL must end with /  
+Outline base URL must end with /api  
+Outline API token is available in Account settings - API Tokens
+
+### Migration -
+```
+go run main.go migrate --from {Confluence SpaceKey} --to {Outline collection ID}
+```
+**SpaceKey** -  
+The all capital letter keyword after /display/ part of the URL  
+'hostname/display/TEST/Test' has the SpaceKey "TEST"  
+
+**Outline CollectionID** -  
+While in the inspect element Network tab in the destination Outline page Star the target collection.  
+There will be a POST request with the collectionId in the Request and Response tabs. 
+
+### Clean -
+```
+go run main.go clean --collection {Outline collection ID}
+```
+
+
 ## Generating Outline API client
 
 Outline does not publish Go client, but one can be generated.
