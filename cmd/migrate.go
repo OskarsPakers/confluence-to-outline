@@ -104,6 +104,7 @@ func replaceUrls(outlineClient *outline.OutlineExtendedClient) {
 	done := true
 	confluenceHostname := strings.TrimSuffix(os.Getenv("CONFLUENCE_BASE_URL"), "/")
 	outlineHostname := strings.TrimSuffix(os.Getenv("OUTLINE_BASE_URL"), "/api")
+
 	jsonCount := 0
 	jsonCount2 := 0
 	var checkURLs []DocInfo
@@ -129,16 +130,16 @@ func replaceUrls(outlineClient *outline.OutlineExtendedClient) {
 			if strings.Contains(replacedContent, "\n]"+newUrlHostnameWrapped+"[") || strings.Contains(replacedContent, "\n]"+newUrlWrapped+"[") {
 				jsonCount++
 				checkURLs = append(checkURLs, DocInfo{Id: urlInfo.DocId, OutUrl: urlInfo.NewUrl, ConfURL: oldUrl, Count: jsonCount})
-			}
+			} //Logging of URLs where relative or absolute URLs are weirdly formatted/wrong
 
 		}
 		stringToCheck, exists := os.LookupEnv("CHECK_STRING")
 		if !exists {
 			stringToCheck = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaak"
-		}
+		} //Any string that shouldn't come up in any page works if you want no checking
 		if strings.Contains(replacedContent, stringToCheck) {
 			jsonCount2++
-			for oldUrl, urlInfoFromMap := range urlMap {
+			for oldUrl, urlInfoFromMap := range urlMap { //Getting the old confluence URL with only knowing the new outline URL
 				if urlInfoFromMap.NewUrl == urlInfo.NewUrl {
 					checkStringJSON = append(checkStringJSON, DocInfo{Id: urlInfo.DocId, OutUrl: urlInfo.NewUrl, ConfURL: oldUrl, Count: jsonCount2})
 					break
@@ -159,11 +160,11 @@ func replaceUrls(outlineClient *outline.OutlineExtendedClient) {
 		}
 
 	}
-	outputJSON(checkURLs, "checkURLs")
-	outputJSON(checkStringJSON, "checkStringJSON")
+	outputJSON(checkURLs, "checkURLs")             //Comment out if you dont want json debug output files
+	outputJSON(checkStringJSON, "checkStringJSON") //Comment out if you dont want json debug output files
 }
 
-func outputJSON(checkStruct []DocInfo, filename string) {
+func outputJSON(checkStruct []DocInfo, filename string) { //Formats structs to JSON with newlines
 	file, err := os.Create(filename + ".json")
 	if err != nil {
 		panic(err)
@@ -209,33 +210,52 @@ func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceCli
 	}
 
 	createdDocumentId := importDocumentRes.JSON200.Data.Id
-	if parentDocumentId == "" {
+	if parentDocumentId == "" { // Root document ID is needed for some URL replacements
 		rootDocumentId = createdDocumentId
 	}
+
 	title := *importDocumentRes.JSON200.Data.Title
 	urlId := *importDocumentRes.JSON200.Data.UrlId
 	titleSlug := slug.Make(title)
-	newUrl := fmt.Sprintf(`/doc/%s-%s`, titleSlug, urlId)
-	oldUrl := fmt.Sprintf(`/pages/viewpage.action?pageId=%s`, page.ID)
+	newUrl := fmt.Sprintf(`/doc/%s-%s`, titleSlug, urlId)              // Outline URL
+	oldUrl := fmt.Sprintf(`/pages/viewpage.action?pageId=%s`, page.ID) // Confluence URL
 
 	urlMapMutex.Lock()
-	urlMap[oldUrl] = UrlInfo{NewUrl: newUrl, DocId: createdDocumentId.String()}
+	urlMap[oldUrl] = UrlInfo{NewUrl: newUrl, DocId: createdDocumentId.String()} //Map of old, new URLs and their document IDs
 	urlMapMutex.Unlock()
-	if parentDocumentId == rootDocumentId.String() {
+	if parentDocumentId == rootDocumentId.String() { //Specific to child documents with root parent
 		oldUrl = fmt.Sprintf(`/display/%s/%s`, spacekey, page.Title)
-		fmt.Println(oldUrl)
 		urlMapMutex.Lock()
 		urlMap[oldUrl] = UrlInfo{NewUrl: newUrl, DocId: createdDocumentId.String()}
 		urlMapMutex.Unlock()
 	}
+	urlwords := strings.Split(page.Title, " ")
+	if len(urlwords) == 1 {
+		oldUrl = fmt.Sprintf(`/display/%s/%s`, spacekey, urlwords[0])
+		urlMapMutex.Lock()
+		urlMap[oldUrl] = UrlInfo{NewUrl: newUrl, DocId: createdDocumentId.String()}
+		urlMapMutex.Unlock()
+	} else if len(urlwords) > 1 {
+		oldUrl = fmt.Sprintf(`/display/%s/%s`, spacekey, strings.Join(urlwords, "+"))
+		urlMapMutex.Lock()
+		urlMap[oldUrl] = UrlInfo{NewUrl: newUrl, DocId: createdDocumentId.String()}
+		urlMapMutex.Unlock()
+		if strings.HasSuffix(urlwords[0], ":") {
+			urlwords[0] = strings.ReplaceAll(urlwords[0], ":", "%3A")
+			oldUrl = fmt.Sprintf(`/display/%s/%s`, spacekey, strings.Join(urlwords, "+"))
+			urlMapMutex.Lock()
+			urlMap[oldUrl] = UrlInfo{NewUrl: newUrl, DocId: createdDocumentId.String()}
+			urlMapMutex.Unlock()
+		}
+	}
 
-	os.Remove("tmp/" + *exportedDoc)
-	fmt.Printf("Imported document \"%s\" (%s).\n", createdDocumentId, *importDocumentRes.JSON200.Data.Title)
+	os.Remove("tmp/" + *exportedDoc)                                                                         //Temp cleanup
+	fmt.Printf("Imported document \"%s\" (%s).\n", createdDocumentId, *importDocumentRes.JSON200.Data.Title) //Console logging
 
 	if page.Children == nil || page.Children.Pages.Size == 0 {
 		return
 	}
-	fmt.Printf("Migrating %d child pages of %s (%s).\n", page.Children.Pages.Size, page.ID, page.Title)
+	fmt.Printf("Migrating %d child pages of %s (%s).\n", page.Children.Pages.Size, page.ID, page.Title) //Console logging
 
 	for _, childPage := range page.Children.Pages.Results {
 
@@ -249,7 +269,7 @@ func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceCli
 	}
 }
 
-func saveUrlMapToFile() {
+func saveUrlMapToFile() { //For debug purposes saves URL map to json file. Function call can be commented out.
 	urlMapMutex.Lock()
 	defer urlMapMutex.Unlock()
 
