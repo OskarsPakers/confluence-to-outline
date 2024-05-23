@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -21,6 +22,13 @@ import (
 type UrlInfo struct {
 	NewUrl string
 	DocId  string
+}
+
+type DocInfo struct {
+	Count   int    `json:"Count"`
+	Id      string `json:"DocumentID"`
+	ConfURL string `json:"ConfluenceURL"`
+	OutUrl  string `json:"OutlineURL"`
 }
 
 var urlMap = make(map[string]UrlInfo)
@@ -80,7 +88,7 @@ var migrateCmd = &cobra.Command{
 		}
 
 		for _, page := range rootPages.Pages.Results {
-			migratePageRecurse(page, "", confluenceClient, outlineClient, collectionId)
+			migratePageRecurse(page, "", confluenceClient, outlineClient, collectionId, nil, spaceKey)
 		}
 		saveUrlMapToFile() //Comment out to disable saving URL map to json file
 		replaceUrls(outlineClient)
@@ -92,8 +100,14 @@ func replaceUrls(outlineClient *outline.OutlineExtendedClient) {
 	urlMapMutex.Lock()
 	defer urlMapMutex.Unlock()
 	publish := true
-	append := false
+	appendDoc := false
 	done := true
+	confluenceHostname := strings.TrimSuffix(os.Getenv("CONFLUENCE_BASE_URL"), "/")
+	outlineHostname := strings.TrimSuffix(os.Getenv("OUTLINE_BASE_URL"), "/api")
+	jsonCount := 0
+	jsonCount2 := 0
+	var checkURLs []DocInfo
+	var checkStringJSON []DocInfo
 	for _, urlInfo := range urlMap {
 		resp, err := outlineClient.Client.PostDocumentsInfoWithResponse(context.Background(), outline.PostDocumentsInfoJSONRequestBody{
 			Id: &urlInfo.DocId,
@@ -104,27 +118,67 @@ func replaceUrls(outlineClient *outline.OutlineExtendedClient) {
 		document := resp.JSON200
 		replacedContent := *document.Data.Text
 		for oldUrl, urlInfo := range urlMap {
-			oldUrlWrapped := "(" + oldUrl + ")"
+			oldUrlWrapped := "(" + oldUrl + ")" //Relative URL
 			newUrlWrapped := "(" + urlInfo.NewUrl + ")"
+			oldUrlHostnameWrapped := "(" + confluenceHostname + oldUrl + ")" //Absolute URL
+			newUrlHostnameWrapped := "(" + outlineHostname + urlInfo.NewUrl + ")"
+
 			replacedContent = strings.ReplaceAll(replacedContent, oldUrlWrapped, newUrlWrapped)
+			replacedContent = strings.ReplaceAll(replacedContent, oldUrlHostnameWrapped, newUrlHostnameWrapped)
+
+			if strings.Contains(replacedContent, "\n]"+newUrlHostnameWrapped+"[") || strings.Contains(replacedContent, "\n]"+newUrlWrapped+"[") {
+				jsonCount++
+				checkURLs = append(checkURLs, DocInfo{Id: urlInfo.DocId, OutUrl: urlInfo.NewUrl, ConfURL: oldUrl, Count: jsonCount})
+			}
+
 		}
+		stringToCheck, exists := os.LookupEnv("CHECK_STRING")
+		if !exists {
+			stringToCheck = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaak"
+		}
+		if strings.Contains(replacedContent, stringToCheck) {
+			jsonCount2++
+			for oldUrl, urlInfoFromMap := range urlMap {
+				if urlInfoFromMap.NewUrl == urlInfo.NewUrl {
+					checkStringJSON = append(checkStringJSON, DocInfo{Id: urlInfo.DocId, OutUrl: urlInfo.NewUrl, ConfURL: oldUrl, Count: jsonCount2})
+					break
+				}
+			}
+		}
+
 		_, err = outlineClient.Client.PostDocumentsUpdateWithResponse(context.Background(), outline.PostDocumentsUpdateJSONRequestBody{
 			Id:      urlInfo.DocId,
 			Title:   document.Data.Title,
 			Text:    &replacedContent,
-			Append:  &append,
+			Append:  &appendDoc,
 			Publish: &publish,
 			Done:    &done,
 		})
 		if err != nil {
 			panic(err)
 		}
+
+	}
+	outputJSON(checkURLs, "checkURLs")
+	outputJSON(checkStringJSON, "checkStringJSON")
+}
+
+func outputJSON(checkStruct []DocInfo, filename string) {
+	file, err := os.Create(filename + ".json")
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "\n")
+	err = encoder.Encode(checkStruct)
+	if err != nil {
+		panic(err)
 	}
 }
 
-func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceClient *confluence.ConfluenceExtendedClient, outlineClient *outline.OutlineExtendedClient, collectionId string) {
+func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceClient *confluence.ConfluenceExtendedClient, outlineClient *outline.OutlineExtendedClient, collectionId string, rootDocumentId *uuid.UUID, spacekey string) {
 	var publish = true
-
 	exportedDoc, err := confluenceClient.ExportDoc(page.ID)
 	if err != nil {
 		panic(err)
@@ -145,7 +199,6 @@ func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceCli
 		File:    &importFileRequest,
 		Publish: &publish,
 	}
-
 	if parentDocumentId != "" {
 		parentDocumentUuid := uuid.MustParse(parentDocumentId)
 		importDocumentReq.ParentDocumentId = &parentDocumentUuid
@@ -156,7 +209,9 @@ func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceCli
 	}
 
 	createdDocumentId := importDocumentRes.JSON200.Data.Id
-
+	if parentDocumentId == "" {
+		rootDocumentId = createdDocumentId
+	}
 	title := *importDocumentRes.JSON200.Data.Title
 	urlId := *importDocumentRes.JSON200.Data.UrlId
 	titleSlug := slug.Make(title)
@@ -166,6 +221,13 @@ func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceCli
 	urlMapMutex.Lock()
 	urlMap[oldUrl] = UrlInfo{NewUrl: newUrl, DocId: createdDocumentId.String()}
 	urlMapMutex.Unlock()
+	if parentDocumentId == rootDocumentId.String() {
+		oldUrl = fmt.Sprintf(`/display/%s/%s`, spacekey, page.Title)
+		fmt.Println(oldUrl)
+		urlMapMutex.Lock()
+		urlMap[oldUrl] = UrlInfo{NewUrl: newUrl, DocId: createdDocumentId.String()}
+		urlMapMutex.Unlock()
+	}
 
 	os.Remove("tmp/" + *exportedDoc)
 	fmt.Printf("Imported document \"%s\" (%s).\n", createdDocumentId, *importDocumentRes.JSON200.Data.Title)
@@ -183,7 +245,7 @@ func migratePageRecurse(page *cf.Content, parentDocumentId string, confluenceCli
 		if err != nil {
 			panic(err)
 		}
-		migratePageRecurse(childPageFull, createdDocumentId.String(), confluenceClient, outlineClient, collectionId)
+		migratePageRecurse(childPageFull, createdDocumentId.String(), confluenceClient, outlineClient, collectionId, rootDocumentId, spacekey)
 	}
 }
 
