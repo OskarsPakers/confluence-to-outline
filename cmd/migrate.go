@@ -118,18 +118,32 @@ func replaceUrls(outlineClient *outline.OutlineExtendedClient) {
 		}
 		document := resp.JSON200
 		replacedContent := *document.Data.Text
-		for oldUrl, urlInfo := range urlMap {
+		for oldUrl, urlInfo2 := range urlMap {
 			oldUrlWrapped := "(" + oldUrl + ")" //Relative URL
-			newUrlWrapped := "(" + urlInfo.NewUrl + ")"
+			newUrlWrapped := "(" + urlInfo2.NewUrl + ")"
 			oldUrlHostnameWrapped := "(" + confluenceHostname + oldUrl + ")" //Absolute URL
-			newUrlHostnameWrapped := "(" + outlineHostname + urlInfo.NewUrl + ")"
+			newUrlHostnameWrapped := "(" + outlineHostname + urlInfo2.NewUrl + ")"
 
 			replacedContent = strings.ReplaceAll(replacedContent, oldUrlWrapped, newUrlWrapped)
 			replacedContent = strings.ReplaceAll(replacedContent, oldUrlHostnameWrapped, newUrlHostnameWrapped)
 
 			if strings.Contains(replacedContent, "\n]"+newUrlHostnameWrapped+"[") || strings.Contains(replacedContent, "\n]"+newUrlWrapped+"[") {
-				jsonCount++
-				checkURLs = append(checkURLs, DocInfo{Id: urlInfo.DocId, OutUrl: urlInfo.NewUrl, ConfURL: oldUrl, Count: jsonCount})
+				for oldUrl2, urlInfoFromMap := range urlMap { //Getting the old confluence URL with only knowing the new outline URL
+					if urlInfoFromMap.NewUrl == urlInfo.NewUrl {
+						exists := false
+						for _, docInfo := range checkURLs {
+							if docInfo.Id == urlInfo.DocId {
+								exists = true
+								break
+							}
+						}
+						if !exists {
+							jsonCount++
+							checkURLs = append(checkURLs, DocInfo{Id: urlInfo.DocId, OutUrl: urlInfo.NewUrl, ConfURL: oldUrl2, Count: jsonCount})
+						}
+						break
+					}
+				}
 			} //Logging of URLs where relative or absolute URLs are weirdly formatted/wrong
 
 		}
@@ -138,10 +152,19 @@ func replaceUrls(outlineClient *outline.OutlineExtendedClient) {
 			stringToCheck = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaak"
 		} //Any string that shouldn't come up in any page works if you want no checking
 		if strings.Contains(replacedContent, stringToCheck) {
-			jsonCount2++
 			for oldUrl, urlInfoFromMap := range urlMap { //Getting the old confluence URL with only knowing the new outline URL
 				if urlInfoFromMap.NewUrl == urlInfo.NewUrl {
-					checkStringJSON = append(checkStringJSON, DocInfo{Id: urlInfo.DocId, OutUrl: urlInfo.NewUrl, ConfURL: oldUrl, Count: jsonCount2})
+					exists := false
+					for _, docInfo := range checkStringJSON {
+						if docInfo.Id == urlInfo.DocId {
+							exists = true
+							break
+						}
+					}
+					if !exists {
+						jsonCount2++
+						checkStringJSON = append(checkStringJSON, DocInfo{Id: urlInfo.DocId, OutUrl: urlInfo.NewUrl, ConfURL: oldUrl, Count: jsonCount2})
+					}
 					break
 				}
 			}
