@@ -27,7 +27,7 @@ An .env file is required with the following fields -
 ```
 CONFLUENCE_BASE_URL=https://hostname.com/
 OUTLINE_API_TOKEN={api_token}
-OUTLINE_BASE_URL=http://127.0.0.1:8888/api
+OUTLINE_BASE_URL=http://your_outline_url/api
 ```
 The Confluence base URL must end with /  
 Outline base URL must end with /api  
