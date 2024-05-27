@@ -53,10 +53,10 @@ func (c *OutlineExtendedClient) GetBaseURL() string {
 
 func (c *OutlineExtendedClient) CleanCollection(collection string) error {
 	var collectionId = uuid.MustParse(collection)
+
 	res, err := c.Client.PostDocumentsListWithResponse(context.Background(), PostDocumentsListJSONRequestBody{
 		CollectionId: &collectionId,
 	})
-
 	if err != nil {
 		return err
 	}
@@ -66,6 +66,7 @@ func (c *OutlineExtendedClient) CleanCollection(collection string) error {
 			deleteRes, err := c.Client.PostDocumentsDeleteWithResponse(context.Background(), PostDocumentsDeleteJSONRequestBody{
 				Id: document.Id.String(),
 			})
+			fmt.Println(deleteRes.StatusCode(), string(deleteRes.Body), document.Id.String(), document.Title) //TODO remove after clean fixed
 			if err != nil {
 				return err
 			}

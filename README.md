@@ -32,10 +32,11 @@ OUTLINE_BASE_URL=http://your_outline_url/api
 The Confluence base URL must end with /  
 Outline base URL must end with /api  
 Outline API token is available in Account settings - API Tokens
+The flag --mark followed by a string is a regex pattern within pages to review later. List of pages matching regex are saved in a Marked.json file for manual review
 
 ### Migration -
 ```
-go run main.go migrate --from {Confluence SpaceKey} --to {Outline collection ID}
+go run main.go migrate --from {Confluence SpaceKey} --to {Outline collection ID} --mark {string}
 ```
 **SpaceKey** -  
 The all capital letter keyword after /display/ part of the URL  

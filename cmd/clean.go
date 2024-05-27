@@ -25,8 +25,7 @@ var cleanCmd = &cobra.Command{
 			panic(err)
 		}
 
-		err = client.CleanCollection(collection)
-
+		err = client.CleanCollection(collection) //TODO Fix mystery 403 authorization_error
 		if err != nil {
 			panic(err)
 		}
