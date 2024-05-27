@@ -45,6 +45,10 @@ func GetClient() (*ConfluenceExtendedClient, error) {
 		baseUrl: confluenceBaseUrl}, nil
 }
 
+func (c *ConfluenceExtendedClient) GetBaseURL() string {
+	return c.baseUrl
+}
+
 func (c *ConfluenceExtendedClient) ExportDoc(pageId string) (*string, error) {
 	// return c.Client.url
 	// "CONFLUENCE_URL" + "exportword?pageId=PAGE_ID"

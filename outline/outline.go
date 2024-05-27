@@ -15,7 +15,8 @@ import (
 )
 
 type OutlineExtendedClient struct {
-	Client *ClientWithResponses
+	Client         *ClientWithResponses
+	outlineBaseUrl string
 }
 
 func GetClient() (*OutlineExtendedClient, error) {
@@ -44,6 +45,10 @@ func GetClient() (*OutlineExtendedClient, error) {
 		return nil, err
 	}
 	return &OutlineExtendedClient{Client: client}, nil
+}
+
+func (c *OutlineExtendedClient) GetBaseURL() string {
+	return c.outlineBaseUrl
 }
 
 func (c *OutlineExtendedClient) CleanCollection(collection string) error {
