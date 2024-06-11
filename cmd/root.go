@@ -16,6 +16,7 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
+	rootCmd.PersistentFlags().String("log", "info", "Logging level")
 	err := rootCmd.Execute()
 	if err != nil {
 		os.Exit(1)

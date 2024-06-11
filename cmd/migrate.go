@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 
 	cf "github.com/essentialkaos/go-confluence/v6"
@@ -43,6 +45,7 @@ type Migrator struct {
 	spaceKey         string
 	collectionId     string
 	markRegex        string
+	logger           *slog.Logger
 }
 
 // migrateCmd represents the migrate command
@@ -51,6 +54,12 @@ var migrateCmd = &cobra.Command{
 	Short: "Migrate confluence pages to outline documents",
 	Long:  `Exports word documents from confluence space and uploads them to outline collection.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		lvl := new(slog.LevelVar)
+		levelString := cmd.Flag("log").Value.String()
+		lvl.UnmarshalText([]byte(levelString))
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: lvl,
+		}))
 		spaceKey, err := cmd.Flags().GetString("from")
 		if err != nil {
 			panic(err)
@@ -61,7 +70,7 @@ var migrateCmd = &cobra.Command{
 			panic(err)
 		}
 
-		outlineClient, err := outline.GetClient()
+		outlineClient, err := outline.GetClient(logger)
 		if err != nil {
 			panic(err)
 		}
@@ -96,9 +105,10 @@ var migrateCmd = &cobra.Command{
 			spaceKey:         spaceKey,
 			collectionId:     collectionId,
 			markRegex:        markRegex,
+			logger:           logger,
 		}
 
-		fmt.Printf("Migrating confluence pages from Confluence space \"%s\" (%s) to Outline collection \"%s\" (%s).\n", spaceKey, space.Name, collectionId, collectionTitle)
+		logger.Info("Migrating confluence pages to Outline collection", "spaceKey", spaceKey, "spaceName", space.Name, "collectionId", collectionId, "collectionTitle", collectionTitle)
 
 		rootPages, err := confluenceClient.Client.GetSpaceContent(spaceKey, cf.SpaceParameters{
 			SpaceKey: []string{spaceKey},
@@ -112,7 +122,7 @@ var migrateCmd = &cobra.Command{
 		for _, page := range rootPages.Pages.Results {
 			migrator.migratePageRecurse(page, "")
 		}
-		migrator.saveUrlMapToFile() //Comment out to disable saving URL map to json file
+		outputDataToJSON(migrator.urlMap, "urlMap")
 		migrator.fixURLs()
 
 	},
@@ -129,9 +139,7 @@ func (m Migrator) fixURLs() {
 			panic(err)
 		}
 		document := resp.JSON200
-		documentBody := *document.Data.Text
-		documentId := *document.Data.Id
-		documentData := DocumentData{DocId: documentId.String(), DocBody: documentBody, Title: *document.Data.Title}
+		documentData := DocumentData{DocId: (*document.Data.Id).String(), DocBody: *document.Data.Text, Title: *document.Data.Title}
 		for oldUrl, urlInfo := range m.urlMap {
 			documentData.DocBody = m.replaceUrlInDocument(oldUrl, urlInfo, documentData.DocBody)
 			checkURLs = m.markBrokenLinks(urlInfo, documentData, checkURLs)
@@ -141,64 +149,58 @@ func (m Migrator) fixURLs() {
 		}
 		m.updateOutlineDocument(documentData)
 	}
-	outputJSON(checkURLs, "checkURLs")    //Comment out if you dont want json debug output files
-	outputJSON(checkStringJSON, "Marked") //Comment out if you dont want json debug output files
+	outputMarkedPages(checkURLs, "checkURLs")
+	outputMarkedPages(checkStringJSON, "Marked")
+}
+
+func outputMarkedPages(data []JsonOutputVars, filename string) {
+	for i := range data {
+		data[i].Counter = i + 1
+	}
+	outputDataToJSON(data, filename)
 }
 
 func (m Migrator) replaceUrlInDocument(oldUrl string, urlMapEntry UrlMapEntry, documentBody string) string {
 	confluenceHostname := strings.TrimSuffix(m.confluenceClient.GetBaseURL(), "/")
 	outlineHostname := strings.TrimSuffix(m.outlineClient.GetBaseURL(), "/api")
 
-	oldUrlWrapped := "(" + oldUrl + ")" //Relative URL
-	newUrlWrapped := "(" + urlMapEntry.NewUrl + ")"
-	oldUrlHostnameWrapped := "(" + confluenceHostname + oldUrl + ")" //Absolute URL
-	newUrlHostnameWrapped := "(" + outlineHostname + urlMapEntry.NewUrl + ")"
-	documentBody = strings.ReplaceAll(documentBody, oldUrlWrapped, newUrlWrapped)
-	documentBody = strings.ReplaceAll(documentBody, oldUrlHostnameWrapped, newUrlHostnameWrapped)
+	documentBody = strings.ReplaceAll(documentBody, "("+oldUrl+")", "("+urlMapEntry.NewUrl+")")
+
+	oldUrlAbsolute := confluenceHostname + oldUrl
+	newUrlAbsolute := outlineHostname + urlMapEntry.NewUrl
+	documentBody = strings.ReplaceAll(documentBody, "("+oldUrlAbsolute+")", "("+newUrlAbsolute+")")
+
 	return documentBody
 }
 
-func (m Migrator) markBrokenLinks(urlMapEntry UrlMapEntry, documentData DocumentData, checkURLs []JsonOutputVars) []JsonOutputVars {
+func (m Migrator) markBrokenLinks(urlMapEntry UrlMapEntry, documentData DocumentData, markedURLs []JsonOutputVars) []JsonOutputVars {
 	outlineHostname := strings.TrimSuffix(m.outlineClient.GetBaseURL(), "/api")
-	newUrlWrapped := "(" + urlMapEntry.NewUrl + ")"
-	newUrlHostnameWrapped := "(" + outlineHostname + urlMapEntry.NewUrl + ")"
-	if strings.Contains(documentData.DocBody, "\n]"+newUrlHostnameWrapped+"[") || strings.Contains(documentData.DocBody, "\n]"+newUrlWrapped+"[") {
-		for oldUrl, urlInfoFromMap := range m.urlMap { //Getting the old confluence URL with only knowing document Id
-			if urlInfoFromMap.DocId == documentData.DocId {
-				exists := false
-				for _, docInfo := range checkURLs {
-					if docInfo.Id == urlInfoFromMap.DocId {
-						exists = true
-						break
-					}
+	newUrl := urlMapEntry.NewUrl
+	newUrlAbsolute := outlineHostname + urlMapEntry.NewUrl
+	if strings.Contains(documentData.DocBody, "\n]("+newUrlAbsolute+")[") ||
+		strings.Contains(documentData.DocBody, "\n]("+newUrl+")[") {
+		markedURLs = m.addToMarkedList(documentData, markedURLs)
+	}
+	return markedURLs
+}
+
+func (m Migrator) addToMarkedList(documentData DocumentData, markedURLs []JsonOutputVars) []JsonOutputVars {
+	for oldUrl, urlInfoFromMap := range m.urlMap {
+		if urlInfoFromMap.DocId == documentData.DocId {
+			for _, docInfo := range markedURLs {
+				if docInfo.Id == urlInfoFromMap.DocId {
+					return markedURLs
 				}
-				if !exists {
-					checkURLs = append(checkURLs, JsonOutputVars{Id: urlInfoFromMap.DocId, OutUrl: urlInfoFromMap.NewUrl, ConfURL: oldUrl})
-				}
-				break
 			}
+			return append(markedURLs, JsonOutputVars{Id: urlInfoFromMap.DocId, OutUrl: urlInfoFromMap.NewUrl, ConfURL: oldUrl})
 		}
 	}
-	return checkURLs
+	return markedURLs
 }
 
 func (m Migrator) markRegexFunc(documentData DocumentData, checkStringJSON []JsonOutputVars) []JsonOutputVars {
-	if (m.markRegex != "") && strings.Contains(documentData.DocBody, m.markRegex) { //TODO support regex
-		for oldUrl, urlInfoFromMap := range m.urlMap { //Getting the old confluence URL with only knowing the new outline URL
-			if urlInfoFromMap.DocId == documentData.DocId {
-				exists := false
-				for _, docInfo := range checkStringJSON {
-					if docInfo.Id == urlInfoFromMap.DocId {
-						exists = true
-						break
-					}
-				}
-				if !exists {
-					checkStringJSON = append(checkStringJSON, JsonOutputVars{Id: urlInfoFromMap.DocId, OutUrl: urlInfoFromMap.NewUrl, ConfURL: oldUrl})
-				}
-				break
-			}
-		}
+	if (m.markRegex != "") && regexp.MustCompile(m.markRegex).MatchString(documentData.DocBody) {
+		checkStringJSON = m.addToMarkedList(documentData, checkStringJSON)
 	}
 	return checkStringJSON
 }
@@ -218,33 +220,12 @@ func (m Migrator) updateOutlineDocument(documentData DocumentData) error {
 	return err
 }
 
-func outputJSON(checkStruct []JsonOutputVars, filename string) {
-	file, err := os.Create(filename + ".json")
-	if err != nil {
-		panic(err)
-	}
-	defer file.Close()
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "\n")
-
-	for i, item := range checkStruct {
-		item.Counter = i + 1
-		err = encoder.Encode(item)
-		if err != nil {
-			panic(err)
-		}
-	}
-}
-
-func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) {
+func (m Migrator) importDocumentExportedFromOutline(page *cf.Content, parentDocumentId string, exportedDoc *string) *outline.PostDocumentsImportResponse {
 	var publish = true
-	exportedDoc, err := m.confluenceClient.ExportDoc(page.ID)
+
+	exportedDocBytes, err := os.ReadFile("tmp/" + *exportedDoc)
 	if err != nil {
 		panic(err)
-	}
-	exportedDocBytes, err := os.ReadFile("tmp/" + *exportedDoc) // just pass the file name
-	if err != nil {
-		fmt.Print(err)
 	}
 
 	collectionUuid := uuid.MustParse(m.collectionId)
@@ -266,17 +247,25 @@ func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) 
 	if err != nil {
 		panic(err)
 	}
+	return importDocumentRes
+}
+
+func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) {
+	exportedDoc, err := m.confluenceClient.ExportDoc(page.ID)
+	if err != nil {
+		panic(err)
+	}
+	importDocumentRes := m.importDocumentExportedFromOutline(page, parentDocumentId, exportedDoc)
 	m.createPageMapping(page, importDocumentRes)
 
-	// File import cleanup
 	os.Remove("tmp/" + *exportedDoc)
-	createdDocumentId := *importDocumentRes.JSON200.Data.Id                                                  //Temp cleanup
-	fmt.Printf("Imported document \"%s\" (%s).\n", createdDocumentId, *importDocumentRes.JSON200.Data.Title) //Console logging
+	createdDocumentId := *importDocumentRes.JSON200.Data.Id
+	m.logger.Info("Imported document", "documentId", createdDocumentId, "documentTitle", *importDocumentRes.JSON200.Data.Title)
 
 	if page.Children == nil || page.Children.Pages.Size == 0 {
 		return
 	}
-	fmt.Printf("Migrating %d child pages of %s (%s).\n", page.Children.Pages.Size, page.ID, page.Title) //Console logging
+	m.logger.Info("Migrating child pages", "childPageCount", page.Children.Pages.Size, "pageId", page.ID, "pageTitle", page.Title)
 
 	for _, childPage := range page.Children.Pages.Results {
 
@@ -294,11 +283,11 @@ func (m *Migrator) createPageMapping(page *cf.Content, importDocumentRes *outlin
 	createdDocumentId := *importDocumentRes.JSON200.Data.Id
 	title := *importDocumentRes.JSON200.Data.Title
 	urlId := *importDocumentRes.JSON200.Data.UrlId
-	titleSlug := slug.Make(title)                         // Slug is not present for input document response
-	newUrl := fmt.Sprintf(`/doc/%s-%s`, titleSlug, urlId) // Outline URL
+	titleSlug := slug.Make(title) // Slug is not present for input document response
+	destOutlineUrl := fmt.Sprintf(`/doc/%s-%s`, titleSlug, urlId)
 	confluenceURLs := m.getPossibleConfluenceURLs(page)
 	for i := range confluenceURLs {
-		m.urlMap = updateUrlMap(m.urlMap, confluenceURLs[i], newUrl, createdDocumentId.String())
+		m.urlMap = updateUrlMap(m.urlMap, confluenceURLs[i], destOutlineUrl, createdDocumentId.String())
 	}
 }
 
@@ -317,20 +306,17 @@ func updateUrlMap(urlMap map[string]UrlMapEntry, oldUrl, newUrl, createdDocument
 	return urlMap
 }
 
-func (m Migrator) saveUrlMapToFile() { //For debug purposes saves URL map to json file. Function call can be commented out.
-
-	urlMapJSON, err := json.MarshalIndent(m.urlMap, "", " ")
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Println(string(urlMapJSON))
-	file, err := os.Create("urlMap.json")
+func outputDataToJSON(data interface{}, filename string) {
+	file, err := os.Create(filename + ".json")
 	if err != nil {
 		panic(err)
 	}
 	defer file.Close()
-	_, err = file.Write(urlMapJSON)
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "\n")
+
+	err = encoder.Encode(data)
 	if err != nil {
 		panic(err)
 	}
@@ -343,4 +329,5 @@ func init() {
 	migrateCmd.PersistentFlags().String("to", "", "Outline collection id to import documents into")
 	migrateCmd.MarkPersistentFlagRequired("to")
 	migrateCmd.PersistentFlags().String("mark", "", "Regex pattern within pages to review later. List of pages matching regex are saved in a Marked.json file for manual review.")
+
 }

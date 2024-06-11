@@ -1,7 +1,8 @@
 package cmd
 
 import (
-	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/spf13/cobra"
 	"zzdats.lv/confluence-to-outline/outline"
@@ -13,14 +14,19 @@ var cleanCmd = &cobra.Command{
 	Short: "Delete all documents in collection",
 	Long:  `Finds and deletes all documents within the collection.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		lvl := new(slog.LevelVar)
+		levelString := cmd.Flag("log").Value.String()
+		lvl.UnmarshalText([]byte(levelString))
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+			Level: lvl,
+		}))
 		collection, err := cmd.Flags().GetString("collection")
 		if err != nil {
 			panic(err)
 		}
+		logger.Info("Cleaning collection", "collection", collection)
 
-		fmt.Printf("Cleaning collection %s.\n", collection)
-
-		client, err := outline.GetClient()
+		client, err := outline.GetClient(logger)
 		if err != nil {
 			panic(err)
 		}
