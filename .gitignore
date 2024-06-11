@@ -1,2 +1,5 @@
 .env
 tmp
+urlMap.json
+checkURLs.json
+Marked.json
