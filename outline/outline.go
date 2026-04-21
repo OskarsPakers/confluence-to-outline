@@ -61,16 +61,12 @@ func GetClient(logger *slog.Logger, rateLimit RateLimit) (*OutlineExtendedClient
 		logger.Info(".env file not loaded, reading OUTLINE_API_TOKEN and OUTLINE_BASE_URL from env variables.")
 	}
 	apiToken := os.Getenv("OUTLINE_API_TOKEN")
-
 	if apiToken == "" {
-		fmt.Fprintln(os.Stderr, "OUTLINE_API_TOKEN is not set")
-		os.Exit(1)
+		return nil, fmt.Errorf("OUTLINE_API_TOKEN is not set")
 	}
 	outlineBaseUrl := os.Getenv("OUTLINE_BASE_URL")
-
 	if outlineBaseUrl == "" {
-		fmt.Fprintln(os.Stderr, "OUTLINE_BASE_URL is not set")
-		os.Exit(1)
+		return nil, fmt.Errorf("OUTLINE_BASE_URL is not set")
 	}
 
 	var doer HttpRequestDoer = &http.Client{}

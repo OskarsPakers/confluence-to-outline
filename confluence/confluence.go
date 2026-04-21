@@ -39,8 +39,7 @@ func GetClient() (*ConfluenceExtendedClient, error) {
 	}
 	confluenceBaseUrl := os.Getenv("CONFLUENCE_BASE_URL")
 	if confluenceBaseUrl == "" {
-		fmt.Fprintln(os.Stderr, "CONFLUENCE_BASE_URL is not set")
-		os.Exit(1)
+		return nil, fmt.Errorf("CONFLUENCE_BASE_URL is not set")
 	}
 	username := os.Getenv("CONFLUENCE_USERNAME")
 	apiToken := os.Getenv("CONFLUENCE_API_TOKEN")

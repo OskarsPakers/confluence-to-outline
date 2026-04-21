@@ -22,7 +22,13 @@ It walks a Confluence space recursively, exports each page, uploads embedded att
 
 ## Installation
 
-Build from source:
+Install the latest tagged release with `go install`:
+
+```bash
+go install github.com/oskarspakers/confluence-to-outline@latest
+```
+
+Or build from source:
 
 ```bash
 git clone https://github.com/oskarspakers/confluence-to-outline.git

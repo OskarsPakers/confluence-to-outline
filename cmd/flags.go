@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"oskarspakers/confluence-to-outline/outline"
+	"github.com/oskarspakers/confluence-to-outline/outline"
 
 	"github.com/spf13/cobra"
 )

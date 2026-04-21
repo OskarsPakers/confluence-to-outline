@@ -1,4 +1,4 @@
-module oskarspakers/confluence-to-outline
+module github.com/oskarspakers/confluence-to-outline
 
 go 1.25.0
 

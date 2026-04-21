@@ -11,8 +11,8 @@ import (
 	"regexp"
 	"strings"
 
-	"oskarspakers/confluence-to-outline/confluence"
-	"oskarspakers/confluence-to-outline/outline"
+	"github.com/oskarspakers/confluence-to-outline/confluence"
+	"github.com/oskarspakers/confluence-to-outline/outline"
 
 	cf "github.com/essentialkaos/go-confluence/v6"
 	"github.com/google/uuid"
@@ -176,7 +176,9 @@ func (m Migrator) fixURLs() {
 		if m.markRegex != "" {
 			checkStringJSON = m.markRegexFunc(documentData, checkStringJSON)
 		}
-		m.updateOutlineDocument(documentData)
+		if err := m.updateOutlineDocument(documentData); err != nil {
+			m.logger.Error("Failed to update Outline document", "documentId", documentData.DocId, "error", err)
+		}
 	}
 	outputMarkedPages(checkURLs, "checkURLs")
 	outputMarkedPages(checkStringJSON, "Marked")
@@ -190,27 +192,40 @@ func outputMarkedPages(data []JsonOutputVars, filename string) {
 }
 
 func (m Migrator) replaceUrlInDocument(oldUrl string, urlMapEntry UrlMapEntry, documentBody string) string {
-	confluenceHostname := strings.TrimSuffix(m.confluenceClient.GetBaseURL(), "/")
-	outlineHostname := strings.TrimSuffix(m.outlineClient.GetBaseURL(), "/api")
+	return rewriteConfluenceURL(oldUrl, urlMapEntry, documentBody,
+		strings.TrimSuffix(m.confluenceClient.GetBaseURL(), "/"),
+		strings.TrimSuffix(m.outlineClient.GetBaseURL(), "/api"))
+}
 
+// rewriteConfluenceURL rewrites occurrences of oldUrl (both relative and
+// absolute forms) inside documentBody with the corresponding Outline URL.
+// Only links formatted as Markdown targets — i.e. surrounded by "(" and ")" —
+// are rewritten, to avoid matching unrelated text.
+func rewriteConfluenceURL(oldUrl string, urlMapEntry UrlMapEntry, documentBody, confluenceHostname, outlineHostname string) string {
 	documentBody = strings.ReplaceAll(documentBody, "("+oldUrl+")", "("+urlMapEntry.NewUrl+")")
-
-	oldUrlAbsolute := confluenceHostname + oldUrl
-	newUrlAbsolute := outlineHostname + urlMapEntry.NewUrl
-	documentBody = strings.ReplaceAll(documentBody, "("+oldUrlAbsolute+")", "("+newUrlAbsolute+")")
-
+	documentBody = strings.ReplaceAll(documentBody,
+		"("+confluenceHostname+oldUrl+")",
+		"("+outlineHostname+urlMapEntry.NewUrl+")")
 	return documentBody
 }
 
 func (m Migrator) markBrokenLinks(urlMapEntry UrlMapEntry, documentData DocumentData, markedURLs []JsonOutputVars) []JsonOutputVars {
-	outlineHostname := strings.TrimSuffix(m.outlineClient.GetBaseURL(), "/api")
-	newUrl := urlMapEntry.NewUrl
-	newUrlAbsolute := outlineHostname + urlMapEntry.NewUrl
-	if strings.Contains(documentData.DocBody, "\n]("+newUrlAbsolute+")[") ||
-		strings.Contains(documentData.DocBody, "\n]("+newUrl+")[") {
+	if bodyHasBrokenLink(documentData.DocBody, urlMapEntry,
+		strings.TrimSuffix(m.outlineClient.GetBaseURL(), "/api")) {
 		markedURLs = m.addToMarkedList(documentData, markedURLs)
 	}
 	return markedURLs
+}
+
+// bodyHasBrokenLink reports whether documentBody contains a malformed link
+// shape of the form `\n](URL)[`, for either the relative or absolute form of
+// the new Outline URL. Those shapes are produced when Confluence's exporter
+// splits a link across an auto-numbered list element.
+func bodyHasBrokenLink(documentBody string, urlMapEntry UrlMapEntry, outlineHostname string) bool {
+	newUrl := urlMapEntry.NewUrl
+	newUrlAbsolute := outlineHostname + newUrl
+	return strings.Contains(documentBody, "\n]("+newUrlAbsolute+")[") ||
+		strings.Contains(documentBody, "\n]("+newUrl+")[")
 }
 
 func (m Migrator) addToMarkedList(documentData DocumentData, markedURLs []JsonOutputVars) []JsonOutputVars {
