@@ -1,6 +1,3 @@
-/*
-Copyright © 2023 NAME HERE <EMAIL ADDRESS>
-*/
 package cmd
 
 import (
@@ -14,12 +11,13 @@ import (
 	"regexp"
 	"strings"
 
+	"oskarspakers/confluence-to-outline/confluence"
+	"oskarspakers/confluence-to-outline/outline"
+
 	cf "github.com/essentialkaos/go-confluence/v6"
 	"github.com/google/uuid"
 	"github.com/gosimple/slug"
 	"github.com/spf13/cobra"
-	"zzdats.lv/confluence-to-outline/confluence"
-	"zzdats.lv/confluence-to-outline/outline"
 )
 
 type UrlMapEntry struct {
@@ -82,7 +80,12 @@ var migrateCmd = &cobra.Command{
 			fatal("Error getting --to flag", err)
 		}
 
-		outlineClient, err := outline.GetClient(logger)
+		rateLimit, err := outlineRateLimitFromFlags(cmd)
+		if err != nil {
+			fatal(err.Error(), nil)
+		}
+
+		outlineClient, err := outline.GetClient(logger, rateLimit)
 		if err != nil {
 			fatal("Error creating Outline client", err)
 		}

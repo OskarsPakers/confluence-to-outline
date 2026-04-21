@@ -12,18 +12,50 @@ import (
 	"net/textproto"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"golang.org/x/time/rate"
 )
+
+// rateLimitedDoer wraps an http.Client with a token bucket limiter so the
+// combined request rate across all Outline API calls stays below the server's
+// RATE_LIMITER_REQUESTS / RATE_LIMITER_DURATION_WINDOW setting.
+type rateLimitedDoer struct {
+	client  *http.Client
+	limiter *rate.Limiter
+}
+
+func (d *rateLimitedDoer) Do(req *http.Request) (*http.Response, error) {
+	if d.limiter != nil {
+		ctx := req.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := d.limiter.Wait(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return d.client.Do(req)
+}
 
 type OutlineExtendedClient struct {
 	Client         *ClientWithResponses
+	httpDoer       HttpRequestDoer
 	outlineBaseUrl string
 	logger         *slog.Logger
 }
 
-func GetClient(logger *slog.Logger) (*OutlineExtendedClient, error) {
+// RateLimit configures throttling of outbound Outline API requests. It mirrors
+// Outline's RATE_LIMITER_REQUESTS / RATE_LIMITER_DURATION_WINDOW settings.
+// A Requests value <= 0 disables throttling.
+type RateLimit struct {
+	Requests int
+	Window   time.Duration
+}
+
+func GetClient(logger *slog.Logger, rateLimit RateLimit) (*OutlineExtendedClient, error) {
 	err := godotenv.Load()
 	if err != nil {
 		logger.Info(".env file not loaded, reading OUTLINE_API_TOKEN and OUTLINE_BASE_URL from env variables.")
@@ -40,7 +72,23 @@ func GetClient(logger *slog.Logger) (*OutlineExtendedClient, error) {
 		fmt.Fprintln(os.Stderr, "OUTLINE_BASE_URL is not set")
 		os.Exit(1)
 	}
+
+	var doer HttpRequestDoer = &http.Client{}
+	if rateLimit.Requests > 0 && rateLimit.Window > 0 {
+		// Burst = 1 enforces strict pacing (one request per 1/rate seconds).
+		// A larger burst would let the client fire many requests instantly and
+		// immediately fill Outline's sliding window, tripping the 429 limit
+		// even though our long-term rate is correct.
+		perSecond := float64(rateLimit.Requests) / rateLimit.Window.Seconds()
+		doer = &rateLimitedDoer{
+			client:  &http.Client{},
+			limiter: rate.NewLimiter(rate.Limit(perSecond), 1),
+		}
+		logger.Info("Outline request throttling enabled", "requests", rateLimit.Requests, "windowSeconds", rateLimit.Window.Seconds(), "minIntervalMs", int(1000.0/perSecond))
+	}
+
 	client, err := NewClientWithResponses(outlineBaseUrl,
+		WithHTTPClient(doer),
 		WithRequestEditorFn(func(ctx context.Context, req *http.Request) error {
 			// add authorization header
 			req.Header.Set("Authorization", "Bearer "+apiToken)
@@ -49,10 +97,10 @@ func GetClient(logger *slog.Logger) (*OutlineExtendedClient, error) {
 	)
 
 	if err != nil {
-		logger.Error("Error", err)
+		logger.Error("Error", "error", err)
 		return nil, err
 	}
-	return &OutlineExtendedClient{Client: client, outlineBaseUrl: outlineBaseUrl, logger: logger}, nil
+	return &OutlineExtendedClient{Client: client, httpDoer: doer, outlineBaseUrl: outlineBaseUrl, logger: logger}, nil
 }
 
 func (c *OutlineExtendedClient) GetBaseURL() string {
@@ -146,15 +194,18 @@ func (c *OutlineExtendedClient) UploadAttachment(imageData []byte, filename stri
 	req.Header.Set("Content-Type", bodyWriter.FormDataContentType())
 
 	// If uploadURL points to Outline itself (not an external S3), apply auth
+	// and route through the rate-limited doer so uploads count against the limit.
 	outlineHost := strings.TrimSuffix(c.outlineBaseUrl, "/api")
 	outlineHost = strings.TrimSuffix(outlineHost, "/")
+	uploadDoer := HttpRequestDoer(http.DefaultClient)
 	if strings.HasPrefix(uploadURL, outlineHost) {
 		if err := c.Client.ClientInterface.(*Client).applyEditors(context.Background(), req, nil); err != nil {
 			return "", err
 		}
+		uploadDoer = c.httpDoer
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := uploadDoer.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -175,7 +226,7 @@ func (c *OutlineExtendedClient) CleanCollection(collection string) error {
 		CollectionId: &collectionId,
 	})
 	if err != nil {
-		c.logger.Error("Error", err)
+		c.logger.Error("Error", "error", err)
 		return err
 	}
 
@@ -186,7 +237,7 @@ func (c *OutlineExtendedClient) CleanCollection(collection string) error {
 			})
 			c.logger.Debug("Clean info", "StatusCode", string(rune(deleteRes.StatusCode())), "ResponseBody", string(deleteRes.Body), "DocumentId", document.Id.String(), "DocumentTitle", string(*document.Title)) //TODO remove after clean fixed
 			if err != nil {
-				c.logger.Error("Error", err)
+				c.logger.Error("Error", "error", err)
 				return err
 			}
 			if deleteRes.StatusCode() != 200 {
@@ -202,7 +253,7 @@ func (c *OutlineExtendedClient) CleanCollection(collection string) error {
 	})
 
 	if err != nil {
-		c.logger.Error("Error", err)
+		c.logger.Error("Error", "error", err)
 		return err
 	}
 
@@ -212,7 +263,7 @@ func (c *OutlineExtendedClient) CleanCollection(collection string) error {
 				Id: document.Id.String(),
 			})
 			if err != nil {
-				c.logger.Error("Error", err)
+				c.logger.Error("Error", "error", err)
 				return err
 			}
 			if deleteRes.StatusCode() != 200 {
@@ -239,47 +290,47 @@ func (c *OutlineExtendedClient) ImportDocument(body PostDocumentsImportMultipart
 	bodyWriter := multipart.NewWriter(bodyBuf)
 	collectionIdField, err := bodyWriter.CreateFormField("collectionId")
 	if err != nil {
-		c.logger.Error("Error", err)
+		c.logger.Error("Error", "error", err)
 		return nil, err
 	}
 	_, err = collectionIdField.Write([]byte(body.CollectionId.String()))
 	if err != nil {
-		c.logger.Error("Error writing JSON data:", err)
+		c.logger.Error("Error writing JSON data", "error", err)
 		return nil, err
 	}
 
 	if body.ParentDocumentId != nil {
 		parentDocumentIdField, err := bodyWriter.CreateFormField("parentDocumentId")
 		if err != nil {
-			c.logger.Error("Error", err)
+			c.logger.Error("Error", "error", err)
 			return nil, err
 		}
 		_, err = parentDocumentIdField.Write([]byte(body.ParentDocumentId.String()))
 		if err != nil {
-			c.logger.Error("Error writing JSON data:", err)
+			c.logger.Error("Error writing JSON data", "error", err)
 			return nil, err
 		}
 	}
 
 	titleField, err := bodyWriter.CreateFormField("title")
 	if err != nil {
-		c.logger.Error("Error", err)
+		c.logger.Error("Error", "error", err)
 		return nil, err
 	}
 	_, err = titleField.Write([]byte(title))
 	if err != nil {
-		c.logger.Error("Error writing JSON data:", err)
+		c.logger.Error("Error writing JSON data", "error", err)
 		return nil, err
 	}
 
 	publishField, err := bodyWriter.CreateFormField("publish")
 	if err != nil {
-		c.logger.Error("Error", err)
+		c.logger.Error("Error", "error", err)
 		return nil, err
 	}
 	_, err = publishField.Write([]byte("true"))
 	if err != nil {
-		c.logger.Error("Error writing JSON data:", err)
+		c.logger.Error("Error writing JSON data", "error", err)
 		return nil, err
 	}
 
@@ -290,18 +341,18 @@ func (c *OutlineExtendedClient) ImportDocument(body PostDocumentsImportMultipart
 		"Content-Type":        []string{"text/html"},
 	})
 	if err != nil {
-		c.logger.Error("Error creating file field:", err)
+		c.logger.Error("Error creating file field", "error", err)
 		return nil, err
 	}
 	file, err := os.Open("export/" + filename)
 	if err != nil {
-		c.logger.Error("Error opening file:", err)
+		c.logger.Error("Error opening file", "error", err)
 		return nil, err
 	}
 	defer file.Close()
 	_, err = io.Copy(fileWriter, file)
 	if err != nil {
-		c.logger.Error("Error copying file content:", err)
+		c.logger.Error("Error copying file content", "error", err)
 		return nil, err
 	}
 

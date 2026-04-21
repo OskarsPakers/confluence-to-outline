@@ -7,8 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"os"
+	"strings"
 
 	cf "github.com/essentialkaos/go-confluence/v6"
 	"github.com/joho/godotenv"

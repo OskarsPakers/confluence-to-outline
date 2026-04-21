@@ -1,4 +1,10 @@
+package: outline
 compatibility:
+  # v2's new allOf merge path rejects schemas where sub-schemas disagree on
+  # `nullable` (see e.g. FileOperation.collection). We keep the v1 behaviour
+  # so codegen succeeds. The only downside is that inline enum types inside
+  # allOf blocks are not emitted — those are supplied by hand in
+  # outline_enums.go.
   old-merge-schemas: true
 generate:
   client: true

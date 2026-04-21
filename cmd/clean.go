@@ -5,8 +5,9 @@ import (
 	"log/slog"
 	"os"
 
+	"oskarspakers/confluence-to-outline/outline"
+
 	"github.com/spf13/cobra"
-	"zzdats.lv/confluence-to-outline/outline"
 )
 
 // findChangesCmd represents the findCommited command
@@ -28,7 +29,13 @@ var cleanCmd = &cobra.Command{
 		}
 		logger.Info("Cleaning collection", "collection", collection)
 
-		client, err := outline.GetClient(logger)
+		rateLimit, err := outlineRateLimitFromFlags(cmd)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+
+		client, err := outline.GetClient(logger, rateLimit)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error creating Outline client: %v\n", err)
 			os.Exit(1)
