@@ -1,6 +1,6 @@
 package main
 
-import "oskarspakers/confluence-to-outline/cmd"
+import "github.com/oskarspakers/confluence-to-outline/cmd"
 
 func main() {
 	cmd.Execute()
