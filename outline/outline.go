@@ -31,12 +31,14 @@ func GetClient(logger *slog.Logger) (*OutlineExtendedClient, error) {
 	apiToken := os.Getenv("OUTLINE_API_TOKEN")
 
 	if apiToken == "" {
-		panic("OUTLINE_API_TOKEN is not set")
+		fmt.Fprintln(os.Stderr, "OUTLINE_API_TOKEN is not set")
+		os.Exit(1)
 	}
 	outlineBaseUrl := os.Getenv("OUTLINE_BASE_URL")
 
 	if outlineBaseUrl == "" {
-		panic("OUTLINE_BASE_URL is not set")
+		fmt.Fprintln(os.Stderr, "OUTLINE_BASE_URL is not set")
+		os.Exit(1)
 	}
 	client, err := NewClientWithResponses(outlineBaseUrl,
 		WithRequestEditorFn(func(ctx context.Context, req *http.Request) error {

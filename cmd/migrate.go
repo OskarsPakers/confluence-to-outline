@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"strings"
@@ -62,47 +62,59 @@ var migrateCmd = &cobra.Command{
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 			Level: lvl,
 		}))
+
+		fatal := func(msg string, err error) {
+			if err != nil {
+				logger.Error(msg, "error", err)
+			} else {
+				logger.Error(msg)
+			}
+			os.Exit(1)
+		}
+
 		spaceKey, err := cmd.Flags().GetString("from")
 		if err != nil {
-			panic(err)
+			fatal("Error getting --from flag", err)
 		}
 
 		collectionId, err := cmd.Flags().GetString("to")
 		if err != nil {
-			panic(err)
+			fatal("Error getting --to flag", err)
 		}
 
 		outlineClient, err := outline.GetClient(logger)
 		if err != nil {
-			panic(err)
+			fatal("Error creating Outline client", err)
 		}
 
 		collectionInfo, err := outlineClient.Client.PostCollectionsInfoWithResponse(context.Background(), outline.PostCollectionsInfoJSONRequestBody{
 			Id: uuid.MustParse(collectionId),
 		})
 		if err != nil {
-			panic(err)
+			fatal("Error getting Outline collection info", err)
 		}
 		if collectionInfo.JSON200 == nil {
-			panic(fmt.Sprintf("failed to get Outline collection (status %d): %s", collectionInfo.StatusCode(), string(collectionInfo.Body)))
+			fatal(fmt.Sprintf("failed to get Outline collection (status %d): %s", collectionInfo.StatusCode(), string(collectionInfo.Body)), nil)
 		}
 		collectionTitle := *collectionInfo.JSON200.Data.Name
 
 		confluenceClient, err := confluence.GetClient()
 		if err != nil {
-			panic(err)
+			fatal("Error creating Confluence client", err)
 		}
 
 		space, err := confluenceClient.Client.GetSpace(spaceKey, cf.SpaceParameters{
 			SpaceKey: []string{spaceKey},
 		})
 		if err != nil {
-			panic(err)
+			fatal("Error getting Confluence space", err)
 		}
+
 		markRegex, err := cmd.Flags().GetString("mark")
 		if err != nil {
-			panic(err)
+			fatal("Error getting --mark flag", err)
 		}
+
 		migrator := Migrator{
 			confluenceClient: confluenceClient,
 			outlineClient:    outlineClient,
@@ -122,10 +134,12 @@ var migrateCmd = &cobra.Command{
 			Limit:    10,
 		})
 		if err != nil {
-			panic(err)
+			fatal("Error getting Confluence space content", err)
 		}
 		for _, page := range rootPages.Pages.Results {
-			migrator.migratePageRecurse(page, "")
+			if err := migrator.migratePageRecurse(page, ""); err != nil {
+				fatal("Migration failed", err)
+			}
 		}
 		outputDataToJSON(migrator.urlMap, "urlMap")
 		migrator.fixURLs()
@@ -141,7 +155,8 @@ func (m Migrator) fixURLs() {
 			Id: &urlInfo.DocId,
 		})
 		if err != nil {
-			panic(err)
+			m.logger.Error("Error getting document info", "error", err)
+			continue
 		}
 		document := resp.JSON200
 		documentData := DocumentData{DocId: (*document.Data.Id).String(), DocBody: *document.Data.Text, Title: *document.Data.Title}
@@ -225,12 +240,12 @@ func (m Migrator) updateOutlineDocument(documentData DocumentData) error {
 	return err
 }
 
-func (m Migrator) importDocumentExportedFromOutline(page *cf.Content, parentDocumentId string, exportedDoc *string) *outline.PostDocumentsImportResponse {
+func (m Migrator) importDocumentExportedFromOutline(page *cf.Content, parentDocumentId string, exportedDoc *string) (*outline.PostDocumentsImportResponse, error) {
 	var publish = true
 
 	exportedDocBytes, err := os.ReadFile("export/" + *exportedDoc)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("failed to read exported file for page %s (%s): %w", page.ID, page.Title, err)
 	}
 
 	collectionUuid := uuid.MustParse(m.collectionId)
@@ -250,9 +265,9 @@ func (m Migrator) importDocumentExportedFromOutline(page *cf.Content, parentDocu
 	}
 	importDocumentRes, err := m.outlineClient.ImportDocument(importDocumentReq, *exportedDoc, page.Title)
 	if err != nil {
-		panic(fmt.Sprintf("ImportDocument failed for page %s (%s): %v", page.ID, page.Title, err))
+		return nil, fmt.Errorf("ImportDocument failed for page %s (%s): %w", page.ID, page.Title, err)
 	}
-	return importDocumentRes
+	return importDocumentRes, nil
 }
 
 func (m Migrator) processImagesInHTMLFile(filename string) error {
@@ -362,10 +377,10 @@ func processCodeBlocksInHTMLFile(filename string) error {
 	return os.WriteFile("export/"+filename, []byte(html), 0644)
 }
 
-func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) {
+func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) error {
 	exportedDoc, err := m.confluenceClient.ExportDoc(page.ID)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("failed to export page %s (%s): %w", page.ID, page.Title, err)
 	}
 	if err := m.processImagesInHTMLFile(*exportedDoc); err != nil {
 		m.logger.Warn("Failed to process images", "pageId", page.ID, "pageTitle", page.Title, "error", err)
@@ -373,9 +388,12 @@ func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) 
 	if err := processCodeBlocksInHTMLFile(*exportedDoc); err != nil {
 		m.logger.Warn("Failed to process code blocks", "pageId", page.ID, "pageTitle", page.Title, "error", err)
 	}
-	importDocumentRes := m.importDocumentExportedFromOutline(page, parentDocumentId, exportedDoc)
+	importDocumentRes, err := m.importDocumentExportedFromOutline(page, parentDocumentId, exportedDoc)
+	if err != nil {
+		return err
+	}
 	if importDocumentRes.JSON200 == nil {
-		panic(fmt.Sprintf("import failed for page %s (%s): status %d body: %s", page.ID, page.Title, importDocumentRes.StatusCode(), string(importDocumentRes.Body)))
+		return fmt.Errorf("import failed for page %s (%s): status %d body: %s", page.ID, page.Title, importDocumentRes.StatusCode(), string(importDocumentRes.Body))
 	}
 	m.createPageMapping(page, importDocumentRes)
 
@@ -383,7 +401,7 @@ func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) 
 	m.logger.Info("Imported document", "documentId", createdDocumentId, "documentTitle", *importDocumentRes.JSON200.Data.Title)
 
 	if page.Children == nil || page.Children.Pages.Size == 0 {
-		return
+		return nil
 	}
 	m.logger.Info("Migrating child pages", "childPageCount", page.Children.Pages.Size, "pageId", page.ID, "pageTitle", page.Title)
 
@@ -393,10 +411,13 @@ func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) 
 			Expand: []string{"version", "body.storage", "children.page"},
 		})
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("failed to get child page %s: %w", childPage.ID, err)
 		}
-		m.migratePageRecurse(childPageFull, createdDocumentId.String())
+		if err := m.migratePageRecurse(childPageFull, createdDocumentId.String()); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (m *Migrator) createPageMapping(page *cf.Content, importDocumentRes *outline.PostDocumentsImportResponse) {
@@ -429,16 +450,17 @@ func updateUrlMap(urlMap map[string]UrlMapEntry, oldUrl, newUrl, createdDocument
 func outputDataToJSON(data interface{}, filename string) {
 	file, err := os.Create(filename + ".json")
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "Error creating %s.json: %v\n", filename, err)
+		os.Exit(1)
 	}
 	defer file.Close()
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "\n")
 
-	err = encoder.Encode(data)
-	if err != nil {
-		panic(err)
+	if err = encoder.Encode(data); err != nil {
+		fmt.Fprintf(os.Stderr, "Error encoding JSON to %s.json: %v\n", filename, err)
+		os.Exit(1)
 	}
 }
 
