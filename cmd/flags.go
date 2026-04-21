@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"time"
 
+	"oskarspakers/confluence-to-outline/outline"
+
 	"github.com/spf13/cobra"
-	"zzdats.lv/confluence-to-outline/outline"
 )
 
 func outlineRateLimitFromFlags(cmd *cobra.Command) (outline.RateLimit, error) {

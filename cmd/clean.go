@@ -5,8 +5,9 @@ import (
 	"log/slog"
 	"os"
 
+	"oskarspakers/confluence-to-outline/outline"
+
 	"github.com/spf13/cobra"
-	"zzdats.lv/confluence-to-outline/outline"
 )
 
 // findChangesCmd represents the findCommited command

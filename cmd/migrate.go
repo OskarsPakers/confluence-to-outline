@@ -11,12 +11,13 @@ import (
 	"regexp"
 	"strings"
 
+	"oskarspakers/confluence-to-outline/confluence"
+	"oskarspakers/confluence-to-outline/outline"
+
 	cf "github.com/essentialkaos/go-confluence/v6"
 	"github.com/google/uuid"
 	"github.com/gosimple/slug"
 	"github.com/spf13/cobra"
-	"zzdats.lv/confluence-to-outline/confluence"
-	"zzdats.lv/confluence-to-outline/outline"
 )
 
 type UrlMapEntry struct {
