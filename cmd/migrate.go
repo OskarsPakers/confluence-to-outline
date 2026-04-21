@@ -82,7 +82,12 @@ var migrateCmd = &cobra.Command{
 			fatal("Error getting --to flag", err)
 		}
 
-		outlineClient, err := outline.GetClient(logger)
+		rateLimit, err := outlineRateLimitFromFlags(cmd)
+		if err != nil {
+			fatal(err.Error(), nil)
+		}
+
+		outlineClient, err := outline.GetClient(logger, rateLimit)
 		if err != nil {
 			fatal("Error creating Outline client", err)
 		}

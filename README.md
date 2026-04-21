@@ -34,6 +34,15 @@ Outline base URL must end with /api
 Outline API token is available in Account settings - API Tokens
 The flag --mark followed by a string is a regex pattern within pages to review later. List of pages matching regex are saved in a Marked.json file for manual review
 
+### Outline request throttling
+
+Self-hosted Outline returns `429 Too Many Requests` when its rate limiter is tripped (defaults: `RATE_LIMITER_REQUESTS=1000` per `RATE_LIMITER_DURATION_WINDOW=60` seconds). The CLI throttles outbound requests client-side to stay under that limit:
+
+- `--outline-rate-limit` (default `1000`) — max requests per window. `0` disables throttling.
+- `--outline-rate-window` (default `60`) — window size in seconds.
+
+Tune these to match your Outline server's `RATE_LIMITER_*` settings if you have changed them.
+
 ### Migration -
 ```
 go run main.go migrate --from {Confluence SpaceKey} --to {Outline collection ID} --mark {string}
