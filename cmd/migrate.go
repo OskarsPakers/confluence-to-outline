@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"net/url"
+	"path"
 	"regexp"
 	"strings"
 
@@ -80,6 +82,9 @@ var migrateCmd = &cobra.Command{
 		})
 		if err != nil {
 			panic(err)
+		}
+		if collectionInfo.JSON200 == nil {
+			panic(fmt.Sprintf("failed to get Outline collection (status %d): %s", collectionInfo.StatusCode(), string(collectionInfo.Body)))
 		}
 		collectionTitle := *collectionInfo.JSON200.Data.Name
 
@@ -223,7 +228,7 @@ func (m Migrator) updateOutlineDocument(documentData DocumentData) error {
 func (m Migrator) importDocumentExportedFromOutline(page *cf.Content, parentDocumentId string, exportedDoc *string) *outline.PostDocumentsImportResponse {
 	var publish = true
 
-	exportedDocBytes, err := os.ReadFile("tmp/" + *exportedDoc)
+	exportedDocBytes, err := os.ReadFile("export/" + *exportedDoc)
 	if err != nil {
 		panic(err)
 	}
@@ -245,9 +250,116 @@ func (m Migrator) importDocumentExportedFromOutline(page *cf.Content, parentDocu
 	}
 	importDocumentRes, err := m.outlineClient.ImportDocument(importDocumentReq, *exportedDoc, page.Title)
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("ImportDocument failed for page %s (%s): %v", page.ID, page.Title, err))
 	}
 	return importDocumentRes
+}
+
+func (m Migrator) processImagesInHTMLFile(filename string) error {
+	content, err := os.ReadFile("export/" + filename)
+	if err != nil {
+		return err
+	}
+
+	htmlContent := string(content)
+	confluenceBase := strings.TrimSuffix(m.confluenceClient.GetBaseURL(), "/")
+
+	// For resolving absolute paths (starting with "/"), use only the scheme+host
+	// to avoid double-path like /wiki/wiki/... when confluenceBase already contains a path.
+	confluenceOrigin := confluenceBase
+	if u, err := url.Parse(confluenceBase); err == nil {
+		confluenceOrigin = u.Scheme + "://" + u.Host
+	}
+
+	// Match all <img src="..."> occurrences
+	imgSrcRegex := regexp.MustCompile(`(<img[^>]+src=")([^"]+)(")`)
+
+	var processErr error
+	newContent := imgSrcRegex.ReplaceAllStringFunc(htmlContent, func(match string) string {
+		parts := imgSrcRegex.FindStringSubmatch(match)
+		if len(parts) < 4 {
+			return match
+		}
+		imgSrc := parts[2]
+
+		// Resolve to absolute URL; skip external images that aren't from Confluence or Atlassian media
+		var imgURL string
+		if strings.HasPrefix(imgSrc, "http://") || strings.HasPrefix(imgSrc, "https://") {
+			isConfluence := strings.HasPrefix(imgSrc, confluenceBase)
+			isAtlassianMedia := strings.HasPrefix(imgSrc, "https://api.media.atlassian.com/")
+			if !isConfluence && !isAtlassianMedia {
+				return match
+			}
+			imgURL = imgSrc
+		} else if strings.HasPrefix(imgSrc, "/") {
+			imgURL = confluenceOrigin + imgSrc
+		} else {
+			return match
+		}
+
+		// Strip query params for the filename
+		imgFilename := path.Base(strings.SplitN(imgSrc, "?", 2)[0])
+		if imgFilename == "" || imgFilename == "." {
+			imgFilename = "image.png"
+		}
+
+		imageData, contentType, err := m.confluenceClient.DownloadImage(imgURL)
+		if err != nil {
+			m.logger.Warn("Failed to download image", "url", imgURL, "error", err)
+			return match
+		}
+
+		// Save image to export/images for inspection
+		_ = os.MkdirAll("export/images", 0755)
+		_ = os.WriteFile("export/images/"+imgFilename, imageData, 0644)
+
+		outlineURL, err := m.outlineClient.UploadAttachment(imageData, imgFilename, contentType)
+		if err != nil {
+			m.logger.Warn("Failed to upload image to Outline", "url", imgURL, "error", err)
+			return match
+		}
+
+		return parts[1] + outlineURL + parts[3]
+	})
+
+	if processErr != nil {
+		return processErr
+	}
+
+	return os.WriteFile("export/"+filename, []byte(newContent), 0644)
+}
+
+func processCodeBlocksInHTMLFile(filename string) error {
+	content, err := os.ReadFile("export/" + filename)
+	if err != nil {
+		return err
+	}
+
+	html := string(content)
+
+	// Match Confluence code panel: <div class="code panel...">...<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: LANG; ...">CODE</pre>...</div></div>
+	codePanelRegex := regexp.MustCompile(`(?s)<div[^>]+class="[^"]*code panel[^"]*"[^>]*>.*?<pre[^>]*data-syntaxhighlighter-params="brush:\s*([^;"\s]+)[^"]*"[^>]*>(.*?)</pre>.*?</div>\s*</div>`)
+	brushLangRegex := regexp.MustCompile(`brush:\s*([^;"\s]+)`)
+
+	html = codePanelRegex.ReplaceAllStringFunc(html, func(match string) string {
+		lang := ""
+		if m := brushLangRegex.FindStringSubmatch(match); len(m) > 1 {
+			lang = m[1]
+		}
+		// Extract code content between <pre ...> and </pre>
+		preRegex := regexp.MustCompile(`(?s)<pre[^>]*>(.*?)</pre>`)
+		preMatch := preRegex.FindStringSubmatch(match)
+		if len(preMatch) < 2 {
+			return match
+		}
+		code := preMatch[1]
+		if lang != "" {
+			return `<pre><code class="language-` + lang + `">` + code + `</code></pre>`
+		}
+		return `<pre><code>` + code + `</code></pre>`
+	})
+
+	return os.WriteFile("export/"+filename, []byte(html), 0644)
 }
 
 func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) {
@@ -255,10 +367,18 @@ func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) 
 	if err != nil {
 		panic(err)
 	}
+	if err := m.processImagesInHTMLFile(*exportedDoc); err != nil {
+		m.logger.Warn("Failed to process images", "pageId", page.ID, "pageTitle", page.Title, "error", err)
+	}
+	if err := processCodeBlocksInHTMLFile(*exportedDoc); err != nil {
+		m.logger.Warn("Failed to process code blocks", "pageId", page.ID, "pageTitle", page.Title, "error", err)
+	}
 	importDocumentRes := m.importDocumentExportedFromOutline(page, parentDocumentId, exportedDoc)
+	if importDocumentRes.JSON200 == nil {
+		panic(fmt.Sprintf("import failed for page %s (%s): status %d body: %s", page.ID, page.Title, importDocumentRes.StatusCode(), string(importDocumentRes.Body)))
+	}
 	m.createPageMapping(page, importDocumentRes)
 
-	os.Remove("tmp/" + *exportedDoc)
 	createdDocumentId := *importDocumentRes.JSON200.Data.Id
 	m.logger.Info("Imported document", "documentId", createdDocumentId, "documentTitle", *importDocumentRes.JSON200.Data.Title)
 

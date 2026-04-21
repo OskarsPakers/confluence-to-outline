@@ -3,6 +3,7 @@ package outline
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -48,11 +50,120 @@ func GetClient(logger *slog.Logger) (*OutlineExtendedClient, error) {
 		logger.Error("Error", err)
 		return nil, err
 	}
-	return &OutlineExtendedClient{Client: client, logger: logger}, nil
+	return &OutlineExtendedClient{Client: client, outlineBaseUrl: outlineBaseUrl, logger: logger}, nil
 }
 
 func (c *OutlineExtendedClient) GetBaseURL() string {
 	return c.outlineBaseUrl
+}
+
+// UploadAttachment uploads image data to Outline using its two-step S3 pre-signed upload.
+// Returns the public URL of the uploaded attachment.
+func (c *OutlineExtendedClient) UploadAttachment(imageData []byte, filename string, contentType string) (string, error) {
+	// Step 1: Request a pre-signed upload URL from Outline.
+	// Build request manually to avoid the generated struct's float32 size field
+	// which may not match the API response (Outline returns size as string).
+	reqBodyBytes, err := json.Marshal(map[string]interface{}{
+		"name":        filename,
+		"contentType": contentType,
+		"size":        len(imageData),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	httpReq, err := NewPostAttachmentsCreateRequestWithBody(
+		c.Client.ClientInterface.(*Client).Server,
+		"application/json",
+		bytes.NewReader(reqBodyBytes),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	// Apply auth editors (adds Authorization header)
+	if err := c.Client.ClientInterface.(*Client).applyEditors(context.Background(), httpReq, nil); err != nil {
+		return "", err
+	}
+
+	httpResp, err := c.Client.ClientInterface.(*Client).Client.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer httpResp.Body.Close()
+
+	var createResult struct {
+		Data struct {
+			UploadUrl  string                 `json:"uploadUrl"`
+			Form       map[string]interface{} `json:"form"`
+			Attachment struct {
+				Url string `json:"url"`
+			} `json:"attachment"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(httpResp.Body).Decode(&createResult); err != nil {
+		return "", fmt.Errorf("attachments.create parse error: %w", err)
+	}
+	if createResult.Data.UploadUrl == "" {
+		return "", fmt.Errorf("attachments.create returned no uploadUrl (status %d)", httpResp.StatusCode)
+	}
+
+	// Resolve relative uploadURL (e.g. /api/files.create) against the Outline base URL
+	uploadURL := createResult.Data.UploadUrl
+	if !strings.HasPrefix(uploadURL, "http://") && !strings.HasPrefix(uploadURL, "https://") {
+		base := strings.TrimSuffix(c.outlineBaseUrl, "/api")
+		base = strings.TrimSuffix(base, "/")
+		uploadURL = base + "/" + strings.TrimPrefix(uploadURL, "/")
+	}
+	formFields := createResult.Data.Form
+	attachmentURL := createResult.Data.Attachment.Url
+
+	// Step 2: POST the file to the pre-signed S3 URL
+	bodyBuf := &bytes.Buffer{}
+	bodyWriter := multipart.NewWriter(bodyBuf)
+
+	// S3 requires all policy fields before the file
+	for key, val := range formFields {
+		if err := bodyWriter.WriteField(key, fmt.Sprintf("%v", val)); err != nil {
+			return "", err
+		}
+	}
+	fw, err := bodyWriter.CreateFormFile("file", filename)
+	if err != nil {
+		return "", err
+	}
+	if _, err = fw.Write(imageData); err != nil {
+		return "", err
+	}
+	bodyWriter.Close()
+
+	req, err := http.NewRequest(http.MethodPost, uploadURL, bodyBuf)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", bodyWriter.FormDataContentType())
+
+	// If uploadURL points to Outline itself (not an external S3), apply auth
+	outlineHost := strings.TrimSuffix(c.outlineBaseUrl, "/api")
+	outlineHost = strings.TrimSuffix(outlineHost, "/")
+	if strings.HasPrefix(uploadURL, outlineHost) {
+		if err := c.Client.ClientInterface.(*Client).applyEditors(context.Background(), req, nil); err != nil {
+			return "", err
+		}
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("attachment upload failed: status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return attachmentURL, nil
 }
 
 func (c *OutlineExtendedClient) CleanCollection(collection string) error {
@@ -174,13 +285,13 @@ func (c *OutlineExtendedClient) ImportDocument(body PostDocumentsImportMultipart
 	// Add the file as a form file with a custom Content-Type header
 	fileWriter, err := bodyWriter.CreatePart(textproto.MIMEHeader{
 		"Content-Disposition": []string{fmt.Sprintf(`form-data; name="file"; filename="%s"`, filename)},
-		"Content-Type":        []string{"application/msword"},
+		"Content-Type":        []string{"text/html"},
 	})
 	if err != nil {
 		c.logger.Error("Error creating file field:", err)
 		return nil, err
 	}
-	file, err := os.Open("tmp/" + filename)
+	file, err := os.Open("export/" + filename)
 	if err != nil {
 		c.logger.Error("Error opening file:", err)
 		return nil, err
