@@ -1,6 +1,20 @@
+# Environment / secrets
 .env
-tmp
+.env.local
+
+# Build artefacts
+/confluence-to-outline
+*.exe
+tmp/
+
+# Runtime output produced by migrate/clean
+export/
 urlMap.json
 checkURLs.json
 Marked.json
-export/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
