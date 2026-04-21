@@ -115,15 +115,24 @@ If you're still seeing `429`s with the defaults, your instance or an intermediat
 
 ## Generating the Outline API client
 
-Outline does not publish a Go client, so the one in `outline/outline.gen.go` is generated from the OpenAPI spec with [`oapi-codegen`](https://github.com/deepmap/oapi-codegen). To regenerate after updating `outline_openapi_spec3.yml`:
+Outline does not publish a Go client, so the one in `outline/outline.gen.go` is generated from the OpenAPI spec using [`oapi-codegen`](https://github.com/oapi-codegen/oapi-codegen) v2:
 
 ```bash
-go install github.com/deepmap/oapi-codegen/cmd/oapi-codegen@latest
+go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@latest
+```
+
+To regenerate after updating `outline_openapi_spec3.yml`:
+
+```bash
 cd outline
 oapi-codegen -package outline -config outline_codegen_config.yml outline_openapi_spec3.yml > outline.gen.go
 ```
 
 The spec can be downloaded from <https://raw.githubusercontent.com/outline/openapi/main/spec3.yml>.
+
+### Known caveat
+
+The config sets `compatibility.old-merge-schemas: true` because the current Outline spec has `allOf` blocks whose sub-schemas disagree on `nullable`, which v2's new merge path rejects. A side-effect of the v1 merge path is that inline enum types inside `allOf` blocks are not emitted by the generator. The four such types currently used by the spec are hand-declared in [`outline/outline_enums.go`](outline/outline_enums.go). If you regenerate and the list of missing types changes (look for `undefined: …` build errors), update that file.
 
 ## Contributing
 

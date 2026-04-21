@@ -97,7 +97,7 @@ func GetClient(logger *slog.Logger, rateLimit RateLimit) (*OutlineExtendedClient
 	)
 
 	if err != nil {
-		logger.Error("Error", err)
+		logger.Error("Error", "error", err)
 		return nil, err
 	}
 	return &OutlineExtendedClient{Client: client, httpDoer: doer, outlineBaseUrl: outlineBaseUrl, logger: logger}, nil
@@ -226,7 +226,7 @@ func (c *OutlineExtendedClient) CleanCollection(collection string) error {
 		CollectionId: &collectionId,
 	})
 	if err != nil {
-		c.logger.Error("Error", err)
+		c.logger.Error("Error", "error", err)
 		return err
 	}
 
@@ -237,7 +237,7 @@ func (c *OutlineExtendedClient) CleanCollection(collection string) error {
 			})
 			c.logger.Debug("Clean info", "StatusCode", string(rune(deleteRes.StatusCode())), "ResponseBody", string(deleteRes.Body), "DocumentId", document.Id.String(), "DocumentTitle", string(*document.Title)) //TODO remove after clean fixed
 			if err != nil {
-				c.logger.Error("Error", err)
+				c.logger.Error("Error", "error", err)
 				return err
 			}
 			if deleteRes.StatusCode() != 200 {
@@ -253,7 +253,7 @@ func (c *OutlineExtendedClient) CleanCollection(collection string) error {
 	})
 
 	if err != nil {
-		c.logger.Error("Error", err)
+		c.logger.Error("Error", "error", err)
 		return err
 	}
 
@@ -263,7 +263,7 @@ func (c *OutlineExtendedClient) CleanCollection(collection string) error {
 				Id: document.Id.String(),
 			})
 			if err != nil {
-				c.logger.Error("Error", err)
+				c.logger.Error("Error", "error", err)
 				return err
 			}
 			if deleteRes.StatusCode() != 200 {
@@ -290,47 +290,47 @@ func (c *OutlineExtendedClient) ImportDocument(body PostDocumentsImportMultipart
 	bodyWriter := multipart.NewWriter(bodyBuf)
 	collectionIdField, err := bodyWriter.CreateFormField("collectionId")
 	if err != nil {
-		c.logger.Error("Error", err)
+		c.logger.Error("Error", "error", err)
 		return nil, err
 	}
 	_, err = collectionIdField.Write([]byte(body.CollectionId.String()))
 	if err != nil {
-		c.logger.Error("Error writing JSON data:", err)
+		c.logger.Error("Error writing JSON data", "error", err)
 		return nil, err
 	}
 
 	if body.ParentDocumentId != nil {
 		parentDocumentIdField, err := bodyWriter.CreateFormField("parentDocumentId")
 		if err != nil {
-			c.logger.Error("Error", err)
+			c.logger.Error("Error", "error", err)
 			return nil, err
 		}
 		_, err = parentDocumentIdField.Write([]byte(body.ParentDocumentId.String()))
 		if err != nil {
-			c.logger.Error("Error writing JSON data:", err)
+			c.logger.Error("Error writing JSON data", "error", err)
 			return nil, err
 		}
 	}
 
 	titleField, err := bodyWriter.CreateFormField("title")
 	if err != nil {
-		c.logger.Error("Error", err)
+		c.logger.Error("Error", "error", err)
 		return nil, err
 	}
 	_, err = titleField.Write([]byte(title))
 	if err != nil {
-		c.logger.Error("Error writing JSON data:", err)
+		c.logger.Error("Error writing JSON data", "error", err)
 		return nil, err
 	}
 
 	publishField, err := bodyWriter.CreateFormField("publish")
 	if err != nil {
-		c.logger.Error("Error", err)
+		c.logger.Error("Error", "error", err)
 		return nil, err
 	}
 	_, err = publishField.Write([]byte("true"))
 	if err != nil {
-		c.logger.Error("Error writing JSON data:", err)
+		c.logger.Error("Error writing JSON data", "error", err)
 		return nil, err
 	}
 
@@ -341,18 +341,18 @@ func (c *OutlineExtendedClient) ImportDocument(body PostDocumentsImportMultipart
 		"Content-Type":        []string{"text/html"},
 	})
 	if err != nil {
-		c.logger.Error("Error creating file field:", err)
+		c.logger.Error("Error creating file field", "error", err)
 		return nil, err
 	}
 	file, err := os.Open("export/" + filename)
 	if err != nil {
-		c.logger.Error("Error opening file:", err)
+		c.logger.Error("Error opening file", "error", err)
 		return nil, err
 	}
 	defer file.Close()
 	_, err = io.Copy(fileWriter, file)
 	if err != nil {
-		c.logger.Error("Error copying file content:", err)
+		c.logger.Error("Error copying file content", "error", err)
 		return nil, err
 	}
 
