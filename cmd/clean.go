@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -22,18 +23,21 @@ var cleanCmd = &cobra.Command{
 		}))
 		collection, err := cmd.Flags().GetString("collection")
 		if err != nil {
-			panic(err)
+			fmt.Fprintf(os.Stderr, "Error getting collection flag: %v\n", err)
+			os.Exit(1)
 		}
 		logger.Info("Cleaning collection", "collection", collection)
 
 		client, err := outline.GetClient(logger)
 		if err != nil {
-			panic(err)
+			fmt.Fprintf(os.Stderr, "Error creating Outline client: %v\n", err)
+			os.Exit(1)
 		}
 
 		err = client.CleanCollection(collection) //TODO Fix mystery 403 authorization_error
 		if err != nil {
-			panic(err)
+			fmt.Fprintf(os.Stderr, "Error cleaning collection: %v\n", err)
+			os.Exit(1)
 		}
 
 	},

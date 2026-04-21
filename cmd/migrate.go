@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 
@@ -60,44 +62,59 @@ var migrateCmd = &cobra.Command{
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 			Level: lvl,
 		}))
+
+		fatal := func(msg string, err error) {
+			if err != nil {
+				logger.Error(msg, "error", err)
+			} else {
+				logger.Error(msg)
+			}
+			os.Exit(1)
+		}
+
 		spaceKey, err := cmd.Flags().GetString("from")
 		if err != nil {
-			panic(err)
+			fatal("Error getting --from flag", err)
 		}
 
 		collectionId, err := cmd.Flags().GetString("to")
 		if err != nil {
-			panic(err)
+			fatal("Error getting --to flag", err)
 		}
 
 		outlineClient, err := outline.GetClient(logger)
 		if err != nil {
-			panic(err)
+			fatal("Error creating Outline client", err)
 		}
 
 		collectionInfo, err := outlineClient.Client.PostCollectionsInfoWithResponse(context.Background(), outline.PostCollectionsInfoJSONRequestBody{
 			Id: uuid.MustParse(collectionId),
 		})
 		if err != nil {
-			panic(err)
+			fatal("Error getting Outline collection info", err)
+		}
+		if collectionInfo.JSON200 == nil {
+			fatal(fmt.Sprintf("failed to get Outline collection (status %d): %s", collectionInfo.StatusCode(), string(collectionInfo.Body)), nil)
 		}
 		collectionTitle := *collectionInfo.JSON200.Data.Name
 
 		confluenceClient, err := confluence.GetClient()
 		if err != nil {
-			panic(err)
+			fatal("Error creating Confluence client", err)
 		}
 
 		space, err := confluenceClient.Client.GetSpace(spaceKey, cf.SpaceParameters{
 			SpaceKey: []string{spaceKey},
 		})
 		if err != nil {
-			panic(err)
+			fatal("Error getting Confluence space", err)
 		}
+
 		markRegex, err := cmd.Flags().GetString("mark")
 		if err != nil {
-			panic(err)
+			fatal("Error getting --mark flag", err)
 		}
+
 		migrator := Migrator{
 			confluenceClient: confluenceClient,
 			outlineClient:    outlineClient,
@@ -117,13 +134,21 @@ var migrateCmd = &cobra.Command{
 			Limit:    10,
 		})
 		if err != nil {
-			panic(err)
+			fatal("Error getting Confluence space content", err)
 		}
 		for _, page := range rootPages.Pages.Results {
-			migrator.migratePageRecurse(page, "")
+			if err := migrator.migratePageRecurse(page, ""); err != nil {
+				fatal("Migration failed", err)
+			}
 		}
 		outputDataToJSON(migrator.urlMap, "urlMap")
 		migrator.fixURLs()
+
+		if err := os.RemoveAll("export"); err != nil {
+			logger.Warn("Failed to remove export folder", "error", err)
+		} else {
+			logger.Info("Removed export folder")
+		}
 
 	},
 }
@@ -136,7 +161,8 @@ func (m Migrator) fixURLs() {
 			Id: &urlInfo.DocId,
 		})
 		if err != nil {
-			panic(err)
+			m.logger.Error("Error getting document info", "error", err)
+			continue
 		}
 		document := resp.JSON200
 		documentData := DocumentData{DocId: (*document.Data.Id).String(), DocBody: *document.Data.Text, Title: *document.Data.Title}
@@ -220,12 +246,12 @@ func (m Migrator) updateOutlineDocument(documentData DocumentData) error {
 	return err
 }
 
-func (m Migrator) importDocumentExportedFromOutline(page *cf.Content, parentDocumentId string, exportedDoc *string) *outline.PostDocumentsImportResponse {
+func (m Migrator) importDocumentExportedFromOutline(page *cf.Content, parentDocumentId string, exportedDoc *string) (*outline.PostDocumentsImportResponse, error) {
 	var publish = true
 
-	exportedDocBytes, err := os.ReadFile("tmp/" + *exportedDoc)
+	exportedDocBytes, err := os.ReadFile("export/" + *exportedDoc)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("failed to read exported file for page %s (%s): %w", page.ID, page.Title, err)
 	}
 
 	collectionUuid := uuid.MustParse(m.collectionId)
@@ -245,25 +271,143 @@ func (m Migrator) importDocumentExportedFromOutline(page *cf.Content, parentDocu
 	}
 	importDocumentRes, err := m.outlineClient.ImportDocument(importDocumentReq, *exportedDoc, page.Title)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("ImportDocument failed for page %s (%s): %w", page.ID, page.Title, err)
 	}
-	return importDocumentRes
+	return importDocumentRes, nil
 }
 
-func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) {
+func (m Migrator) processImagesInHTMLFile(filename string) error {
+	content, err := os.ReadFile("export/" + filename)
+	if err != nil {
+		return err
+	}
+
+	htmlContent := string(content)
+	confluenceBase := strings.TrimSuffix(m.confluenceClient.GetBaseURL(), "/")
+
+	// For resolving absolute paths (starting with "/"), use only the scheme+host
+	// to avoid double-path like /wiki/wiki/... when confluenceBase already contains a path.
+	confluenceOrigin := confluenceBase
+	if u, err := url.Parse(confluenceBase); err == nil {
+		confluenceOrigin = u.Scheme + "://" + u.Host
+	}
+
+	// Match all <img src="..."> occurrences
+	imgSrcRegex := regexp.MustCompile(`(<img[^>]+src=")([^"]+)(")`)
+
+	var processErr error
+	newContent := imgSrcRegex.ReplaceAllStringFunc(htmlContent, func(match string) string {
+		parts := imgSrcRegex.FindStringSubmatch(match)
+		if len(parts) < 4 {
+			return match
+		}
+		imgSrc := parts[2]
+
+		// Resolve to absolute URL; skip external images that aren't from Confluence or Atlassian media
+		var imgURL string
+		if strings.HasPrefix(imgSrc, "http://") || strings.HasPrefix(imgSrc, "https://") {
+			isConfluence := strings.HasPrefix(imgSrc, confluenceBase)
+			isAtlassianMedia := strings.HasPrefix(imgSrc, "https://api.media.atlassian.com/")
+			if !isConfluence && !isAtlassianMedia {
+				return match
+			}
+			imgURL = imgSrc
+		} else if strings.HasPrefix(imgSrc, "/") {
+			imgURL = confluenceOrigin + imgSrc
+		} else {
+			return match
+		}
+
+		// Strip query params for the filename
+		imgFilename := path.Base(strings.SplitN(imgSrc, "?", 2)[0])
+		if imgFilename == "" || imgFilename == "." {
+			imgFilename = "image.png"
+		}
+
+		imageData, contentType, err := m.confluenceClient.DownloadImage(imgURL)
+		if err != nil {
+			m.logger.Warn("Failed to download image", "url", imgURL, "error", err)
+			return match
+		}
+
+		// Save image to export/images for inspection
+		_ = os.MkdirAll("export/images", 0755)
+		_ = os.WriteFile("export/images/"+imgFilename, imageData, 0644)
+
+		outlineURL, err := m.outlineClient.UploadAttachment(imageData, imgFilename, contentType)
+		if err != nil {
+			m.logger.Warn("Failed to upload image to Outline", "url", imgURL, "error", err)
+			return match
+		}
+
+		return parts[1] + outlineURL + parts[3]
+	})
+
+	if processErr != nil {
+		return processErr
+	}
+
+	return os.WriteFile("export/"+filename, []byte(newContent), 0644)
+}
+
+func processCodeBlocksInHTMLFile(filename string) error {
+	content, err := os.ReadFile("export/" + filename)
+	if err != nil {
+		return err
+	}
+
+	html := string(content)
+
+	// Match Confluence code panel: <div class="code panel...">...<pre class="syntaxhighlighter-pre" data-syntaxhighlighter-params="brush: LANG; ...">CODE</pre>...</div></div>
+	codePanelRegex := regexp.MustCompile(`(?s)<div[^>]+class="[^"]*code panel[^"]*"[^>]*>.*?<pre[^>]*data-syntaxhighlighter-params="brush:\s*([^;"\s]+)[^"]*"[^>]*>(.*?)</pre>.*?</div>\s*</div>`)
+	brushLangRegex := regexp.MustCompile(`brush:\s*([^;"\s]+)`)
+
+	html = codePanelRegex.ReplaceAllStringFunc(html, func(match string) string {
+		lang := ""
+		if m := brushLangRegex.FindStringSubmatch(match); len(m) > 1 {
+			lang = m[1]
+		}
+		// Extract code content between <pre ...> and </pre>
+		preRegex := regexp.MustCompile(`(?s)<pre[^>]*>(.*?)</pre>`)
+		preMatch := preRegex.FindStringSubmatch(match)
+		if len(preMatch) < 2 {
+			return match
+		}
+		code := preMatch[1]
+		if lang != "" {
+			return `<pre><code class="language-` + lang + `">` + code + `</code></pre>`
+		}
+		return `<pre><code>` + code + `</code></pre>`
+	})
+
+	return os.WriteFile("export/"+filename, []byte(html), 0644)
+}
+
+func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) error {
 	exportedDoc, err := m.confluenceClient.ExportDoc(page.ID)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("failed to export page %s (%s): %w", page.ID, page.Title, err)
 	}
-	importDocumentRes := m.importDocumentExportedFromOutline(page, parentDocumentId, exportedDoc)
+	if err := m.processImagesInHTMLFile(*exportedDoc); err != nil {
+		m.logger.Warn("Failed to process images", "pageId", page.ID, "pageTitle", page.Title, "error", err)
+	}
+	if err := processCodeBlocksInHTMLFile(*exportedDoc); err != nil {
+		m.logger.Warn("Failed to process code blocks", "pageId", page.ID, "pageTitle", page.Title, "error", err)
+	}
+	importDocumentRes, err := m.importDocumentExportedFromOutline(page, parentDocumentId, exportedDoc)
+	if err != nil {
+		return err
+	}
+	if importDocumentRes.JSON200 == nil {
+		return fmt.Errorf("import failed for page %s (%s): status %d body: %s", page.ID, page.Title, importDocumentRes.StatusCode(), string(importDocumentRes.Body))
+	}
 	m.createPageMapping(page, importDocumentRes)
 
-	os.Remove("tmp/" + *exportedDoc)
 	createdDocumentId := *importDocumentRes.JSON200.Data.Id
 	m.logger.Info("Imported document", "documentId", createdDocumentId, "documentTitle", *importDocumentRes.JSON200.Data.Title)
 
 	if page.Children == nil || page.Children.Pages.Size == 0 {
-		return
+		return nil
 	}
 	m.logger.Info("Migrating child pages", "childPageCount", page.Children.Pages.Size, "pageId", page.ID, "pageTitle", page.Title)
 
@@ -273,10 +417,13 @@ func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) 
 			Expand: []string{"version", "body.storage", "children.page"},
 		})
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("failed to get child page %s: %w", childPage.ID, err)
 		}
-		m.migratePageRecurse(childPageFull, createdDocumentId.String())
+		if err := m.migratePageRecurse(childPageFull, createdDocumentId.String()); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (m *Migrator) createPageMapping(page *cf.Content, importDocumentRes *outline.PostDocumentsImportResponse) {
@@ -309,16 +456,17 @@ func updateUrlMap(urlMap map[string]UrlMapEntry, oldUrl, newUrl, createdDocument
 func outputDataToJSON(data interface{}, filename string) {
 	file, err := os.Create(filename + ".json")
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "Error creating %s.json: %v\n", filename, err)
+		os.Exit(1)
 	}
 	defer file.Close()
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "\n")
 
-	err = encoder.Encode(data)
-	if err != nil {
-		panic(err)
+	if err = encoder.Encode(data); err != nil {
+		fmt.Fprintf(os.Stderr, "Error encoding JSON to %s.json: %v\n", filename, err)
+		os.Exit(1)
 	}
 }
 
