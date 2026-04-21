@@ -144,6 +144,12 @@ var migrateCmd = &cobra.Command{
 		outputDataToJSON(migrator.urlMap, "urlMap")
 		migrator.fixURLs()
 
+		if err := os.RemoveAll("export"); err != nil {
+			logger.Warn("Failed to remove export folder", "error", err)
+		} else {
+			logger.Info("Removed export folder")
+		}
+
 	},
 }
 
