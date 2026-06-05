@@ -139,8 +139,9 @@ var migrateCmd = &cobra.Command{
 		if err != nil {
 			fatal("Error getting Confluence space content", err)
 		}
-		for _, page := range rootPages.Pages.Results {
-			if err := migrator.migratePageRecurse(page, ""); err != nil {
+		// Iterate in reverse: Outline inserts new docs at the top of siblings, so reversing preserves Confluence order.
+		for i := len(rootPages.Pages.Results) - 1; i >= 0; i-- {
+			if err := migrator.migratePageRecurse(rootPages.Pages.Results[i], ""); err != nil {
 				fatal("Migration failed", err)
 			}
 		}
@@ -429,7 +430,9 @@ func (m Migrator) migratePageRecurse(page *cf.Content, parentDocumentId string) 
 	}
 	m.logger.Info("Migrating child pages", "childPageCount", page.Children.Pages.Size, "pageId", page.ID, "pageTitle", page.Title)
 
-	for _, childPage := range page.Children.Pages.Results {
+	// Iterate in reverse: Outline inserts new docs at the top of siblings, so reversing preserves Confluence order.
+	for i := len(page.Children.Pages.Results) - 1; i >= 0; i-- {
+		childPage := page.Children.Pages.Results[i]
 
 		childPageFull, err := m.confluenceClient.Client.GetContentByID(childPage.ID, cf.ContentIDParameters{
 			Expand: []string{"version", "body.storage", "children.page"},
