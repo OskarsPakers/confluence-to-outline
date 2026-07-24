@@ -18,7 +18,7 @@ var cleanCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		lvl := new(slog.LevelVar)
 		levelString := cmd.Flag("log").Value.String()
-		lvl.UnmarshalText([]byte(levelString))
+		_ = lvl.UnmarshalText([]byte(levelString))
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 			Level: lvl,
 		}))
@@ -53,5 +53,5 @@ var cleanCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(cleanCmd)
 	cleanCmd.PersistentFlags().String("collection", "", "Collection id or to clean")
-	cleanCmd.MarkPersistentFlagRequired("collection")
+	_ = cleanCmd.MarkPersistentFlagRequired("collection")
 }

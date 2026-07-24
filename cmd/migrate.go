@@ -56,7 +56,7 @@ var migrateCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		lvl := new(slog.LevelVar)
 		levelString := cmd.Flag("log").Value.String()
-		lvl.UnmarshalText([]byte(levelString))
+		_ = lvl.UnmarshalText([]byte(levelString))
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 			Level: lvl,
 		}))
@@ -480,7 +480,7 @@ func outputDataToJSON(data interface{}, filename string) {
 		fmt.Fprintf(os.Stderr, "Error creating %s.json: %v\n", filename, err)
 		os.Exit(1)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "\n")
@@ -494,9 +494,9 @@ func outputDataToJSON(data interface{}, filename string) {
 func init() {
 	rootCmd.AddCommand(migrateCmd)
 	migrateCmd.PersistentFlags().String("from", "", "Confluence SpaceKey to migrate pages from")
-	migrateCmd.MarkPersistentFlagRequired("from")
+	_ = migrateCmd.MarkPersistentFlagRequired("from")
 	migrateCmd.PersistentFlags().String("to", "", "Outline collection id to import documents into")
-	migrateCmd.MarkPersistentFlagRequired("to")
+	_ = migrateCmd.MarkPersistentFlagRequired("to")
 	migrateCmd.PersistentFlags().String("mark", "", "Regex pattern within pages to review later. List of pages matching regex are saved in a Marked.json file for manual review.")
 
 }
