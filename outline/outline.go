@@ -136,7 +136,7 @@ func (c *OutlineExtendedClient) UploadAttachment(imageData []byte, filename stri
 	if err != nil {
 		return "", err
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	var createResult struct {
 		Data struct {
@@ -181,7 +181,9 @@ func (c *OutlineExtendedClient) UploadAttachment(imageData []byte, filename stri
 	if _, err = fw.Write(imageData); err != nil {
 		return "", err
 	}
-	bodyWriter.Close()
+	if err = bodyWriter.Close(); err != nil {
+		return "", err
+	}
 
 	req, err := http.NewRequest(http.MethodPost, uploadURL, bodyBuf)
 	if err != nil {
@@ -205,7 +207,7 @@ func (c *OutlineExtendedClient) UploadAttachment(imageData []byte, filename stri
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(resp.Body)
@@ -345,15 +347,18 @@ func (c *OutlineExtendedClient) ImportDocument(body PostDocumentsImportMultipart
 		c.logger.Error("Error opening file", "error", err)
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	_, err = io.Copy(fileWriter, file)
 	if err != nil {
 		c.logger.Error("Error copying file content", "error", err)
 		return nil, err
 	}
 
-	// Close the multipart writer
-	bodyWriter.Close()
+	// Close the multipart writer to flush the trailing boundary
+	if err := bodyWriter.Close(); err != nil {
+		c.logger.Error("Error closing multipart writer", "error", err)
+		return nil, err
+	}
 
 	return c.Client.PostDocumentsImportWithBodyWithResponse(context.Background(), bodyWriter.FormDataContentType(), bodyBuf)
 }

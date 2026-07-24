@@ -90,7 +90,7 @@ func (c *ConfluenceExtendedClient) ExportDoc(pageId string) (*string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var pageResp confluencePageResponse
 	if err := json.NewDecoder(resp.Body).Decode(&pageResp); err != nil {
@@ -140,7 +140,7 @@ func (c *ConfluenceExtendedClient) DownloadImage(imageUrl string) ([]byte, strin
 	if err != nil {
 		return nil, "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		return nil, "", fmt.Errorf("failed to download image %s: status %d", imageUrl, resp.StatusCode)

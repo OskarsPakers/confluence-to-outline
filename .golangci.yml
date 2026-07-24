@@ -1,0 +1,6 @@
+version: "2"
+
+# Uses the default "standard" linter set: errcheck, govet, ineffassign,
+# staticcheck and unused. These catch unchecked errors and common mistakes.
+linters:
+  default: standard
